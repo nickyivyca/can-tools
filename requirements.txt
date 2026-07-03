@@ -1,0 +1,19 @@
+# can-tools (canbench) dependencies
+# Install with: py -3.12 -m pip install -r requirements.txt   (Windows)
+#          or:  python3 -m pip install -r requirements.txt    (Linux)
+
+# CAN hardware abstraction + native log I/O (candump/SocketCAN, ASC, BLF),
+# plus the virtual and udp_multicast buses used for hardware-free testing.
+python-can>=4.6.1
+
+# gs_usb / candleLight dongles (Innomaker USB2CAN). On Windows the device needs
+# no vendor driver (WinUSB auto-binds via its WCID descriptors); these packages
+# provide the gs_usb backend and a bundled libusb-1.0.dll that
+# canbench.live.receiver injects onto the DLL search path.
+gs_usb>=0.3.1
+pyusb>=1.3.1
+libusb-package>=1.0.26.4
+
+# --- Phase 2 (GUI + packaging) — uncomment when building the GUI/exe ---
+# PyQt5>=5.15            # desktop logger GUI (Windows primary; Linux CLI-only)
+# pyinstaller>=6.0       # onedir Windows build
