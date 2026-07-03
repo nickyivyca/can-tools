@@ -37,6 +37,10 @@ STANDARD_BITRATES = [1000000, 800000, 500000, 250000, 125000, 100000,
 
 COL_LOG, COL_IFACE, COL_PT, COL_RATE, COL_TOTAL, COL_SEEN = range(6)
 
+# Relative widths used when auto-scaling columns to the window.
+COL_WEIGHTS = {COL_LOG: 0.4, COL_IFACE: 3.0, COL_PT: 2.0,
+               COL_RATE: 1.1, COL_TOTAL: 1.1, COL_SEEN: 1.3}
+
 
 def _fmt_bitrate(bps: int) -> str:
     if bps >= 1_000_000 and bps % 1_000_000 == 0:
@@ -55,6 +59,8 @@ class LoggerWindow(QtWidgets.QMainWindow):
         self.show_virtual = show_virtual
 
         self.engine: CaptureEngine | None = None
+        self._manual_cols = set()      # columns the user has dragged -> excluded from auto-scale
+        self._adjusting = False        # guard so programmatic resizes aren't seen as manual
         self.hw_interfaces = []        # detected hardware (iface, ch, desc)
         self.extra_interfaces = []     # user-added network CAN (iface, ch, desc)
         self.interfaces = []           # full current table order
@@ -121,9 +127,9 @@ class LoggerWindow(QtWidgets.QMainWindow):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(COL_IFACE, QtWidgets.QHeaderView.Stretch)
-        self.table.setColumnWidth(COL_LOG, 40)
-        self.table.setColumnWidth(COL_PT, 180)
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        hdr.setStretchLastSection(False)
+        hdr.sectionResized.connect(self._on_section_resized)
         v.addWidget(self.table)
 
         row2 = QtWidgets.QHBoxLayout()
@@ -260,6 +266,7 @@ class LoggerWindow(QtWidgets.QMainWindow):
                 self.table.setItem(row, col, QtWidgets.QTableWidgetItem("-"))
 
         self._rebuild_passthrough_options()
+        self._autosize_columns()
 
     def _rebuild_passthrough_options(self):
         for row, combo in self._pt_combos.items():
@@ -274,6 +281,37 @@ class LoggerWindow(QtWidgets.QMainWindow):
             idx = combo.findData(prev)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
             combo.blockSignals(False)
+
+    # ---- column auto-sizing ---------------------------------------------
+    def _on_section_resized(self, idx, old, new):
+        if getattr(self, "_adjusting", False):
+            return
+        self._manual_cols.add(idx)          # user dragged this column -> pin it
+        self._autosize_columns()            # reflow the remaining auto columns
+
+    def _autosize_columns(self):
+        if getattr(self, "_adjusting", False) or not hasattr(self, "table"):
+            return
+        manual = getattr(self, "_manual_cols", set())
+        auto = [c for c in range(self.table.columnCount()) if c not in manual]
+        if not auto:
+            return
+        avail = self.table.viewport().width() - sum(self.table.columnWidth(c) for c in manual)
+        wsum = sum(COL_WEIGHTS.get(c, 1.0) for c in auto)
+        if avail <= 0 or wsum <= 0:
+            return
+        self._adjusting = True
+        try:
+            for c in auto:
+                self.table.setColumnWidth(c, max(30, int(avail * COL_WEIGHTS.get(c, 1.0) / wsum)))
+        finally:
+            self._adjusting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "table"):
+            # defer one tick so the table viewport has its final width before we scale
+            QtCore.QTimer.singleShot(0, self._autosize_columns)
 
     # ---- start / stop ----------------------------------------------------
     def toggle(self):

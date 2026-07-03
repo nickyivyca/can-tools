@@ -112,6 +112,29 @@ def test_folder_saved_to_ini():
     win.close()
 
 
+def test_columns_autoscale_and_pin():
+    """Columns fill the window and reflow on resize; a dragged column stays pinned."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = LoggerWindow(show_virtual=True)
+    win.resize(1000, 500)
+    win.show()
+    app.processEvents(); app.processEvents()
+
+    ncols = win.table.columnCount()
+    vw = win.table.viewport().width()
+    assert abs(sum(win.table.columnWidth(c) for c in range(ncols)) - vw) < 12   # fills
+
+    win.table.setColumnWidth(2, 260)       # simulate a user drag -> pins column 2
+    app.processEvents(); app.processEvents()
+    win.resize(1400, 500)
+    app.processEvents(); app.processEvents()
+
+    assert win.table.columnWidth(2) == 260                                       # pinned
+    vw2 = win.table.viewport().width()
+    assert abs(sum(win.table.columnWidth(c) for c in range(ncols)) - vw2) < 12   # still fills
+    win.close()
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
