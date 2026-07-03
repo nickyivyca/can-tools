@@ -91,6 +91,27 @@ def test_add_network_can_and_passthrough_options():
     win.close()
 
 
+def test_folder_saved_to_ini():
+    """Changing the folder field persists to the profile's ini."""
+    import tempfile
+    from canbench.profiles import load_profiles
+    base = Path(tempfile.mkdtemp())
+    ini = base / "canbench.ini"
+    ini.write_text(
+        "[general]\ndefault_profile = vtrux\n\n"
+        "[profile:vtrux]\nlog_dir = V\nbitrate = 500000\n\n"
+        "[profile:coda]\nlog_dir = C\nbitrate = 500000\n",
+        encoding="utf-8")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = LoggerWindow(ini_path=ini)
+    newfolder = str((base / "MyLogs").resolve())
+    win.folder_edit.setText(newfolder)
+    win._persist_folder()
+    reloaded = load_profiles(ini_path=ini)
+    assert str(reloaded.get("vtrux").log_dir) == newfolder
+    win.close()
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

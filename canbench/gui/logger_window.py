@@ -23,7 +23,7 @@ from pathlib import Path
 
 from PyQt5 import QtCore, QtWidgets
 
-from ..profiles import load_profiles
+from ..profiles import load_profiles, save_profiles, app_base_dir
 from ..buses import VIRTUAL_CHANNEL, UDP_MULTICAST_GROUP
 from ..live.receiver import (detect_all_can_interfaces, reset_gs_usb_cache,
                              gs_usb_backend_available)
@@ -99,9 +99,20 @@ class LoggerWindow(QtWidgets.QMainWindow):
         top.addWidget(self.refresh_btn)
         v.addLayout(top)
 
-        self.logdir_label = QtWidgets.QLabel()
-        self.logdir_label.setStyleSheet("color: gray;")
-        v.addWidget(self.logdir_label)
+        dest = QtWidgets.QHBoxLayout()
+        dest.addWidget(QtWidgets.QLabel("Folder:"))
+        self.folder_edit = QtWidgets.QLineEdit()
+        dest.addWidget(self.folder_edit, 1)
+        self.browse_btn = QtWidgets.QPushButton("Browse…")
+        self.browse_btn.clicked.connect(self.browse_folder)
+        dest.addWidget(self.browse_btn)
+        dest.addSpacing(16)
+        dest.addWidget(QtWidgets.QLabel("File:"))
+        self.file_edit = QtWidgets.QLineEdit()
+        self.file_edit.setMinimumWidth(210)
+        self.file_edit.setText(self._new_default_filename())
+        dest.addWidget(self.file_edit)
+        v.addLayout(dest)
 
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
@@ -145,7 +156,35 @@ class LoggerWindow(QtWidgets.QMainWindow):
             return
         prof = self.profiles.get(name)
         self._set_bitrate(prof.bitrate)
-        self.logdir_label.setText(f"Log folder: {prof.log_dir}")
+        self.folder_edit.setText(str(prof.log_dir))
+
+    def _new_default_filename(self):
+        self._auto_name = f"canlog_{datetime.datetime.now():%Y%m%d_%H%M%S}.log"
+        return self._auto_name
+
+    def browse_folder(self):
+        if self.engine and self.engine.running:
+            return
+        start = self.folder_edit.text() or str(app_base_dir())
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select log folder", start)
+        if d:
+            self.folder_edit.setText(d)
+            self._persist_folder()
+
+    def _persist_folder(self):
+        name = self.profile_combo.currentText()
+        if name not in self.profiles.profiles:
+            return
+        prof = self.profiles.get(name)
+        new = Path(self.folder_edit.text())
+        if new == prof.log_dir:
+            return                       # unchanged; don't rewrite the ini
+        prof.log_dir = new
+        try:
+            save_profiles(self.profiles)
+            self.status.showMessage(f"Saved log folder to {self.profiles.ini_path}")
+        except Exception as e:
+            self.status.showMessage(f"Could not save ini: {e}")
 
     def _set_bitrate(self, bps):
         idx = self.bitrate_combo.findData(bps)
@@ -268,10 +307,16 @@ class LoggerWindow(QtWidgets.QMainWindow):
 
         log_path = None
         if self.log_check.isChecked() and capture_ids:
-            prof = self.profiles.get(self.profile_combo.currentText())
-            prof.log_dir.mkdir(parents=True, exist_ok=True)
-            stem = f"canlog_{datetime.datetime.now():%Y%m%d_%H%M%S}.log"
-            log_path = str(prof.log_dir / stem)
+            self._persist_folder()
+            folder = Path(self.folder_edit.text())
+            fname = self.file_edit.text().strip()
+            if not fname or fname == self._auto_name:
+                fname = self._new_default_filename()      # fresh timestamp per capture
+                self.file_edit.setText(fname)
+            if "." not in Path(fname).name:
+                fname += ".log"
+            folder.mkdir(parents=True, exist_ok=True)
+            log_path = str(folder / fname)
 
         self.engine = CaptureEngine(bitrate=self.current_bitrate())
         result = self.engine.start(opened, log_path=log_path,
@@ -318,6 +363,9 @@ class LoggerWindow(QtWidgets.QMainWindow):
         self.log_check.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled)
         self.add_net_btn.setEnabled(enabled)
+        self.folder_edit.setEnabled(enabled)
+        self.browse_btn.setEnabled(enabled)
+        self.file_edit.setEnabled(enabled)
         for chk in self._row_checks.values():
             chk.setEnabled(enabled)
         for combo in self._pt_combos.values():

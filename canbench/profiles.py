@@ -68,6 +68,7 @@ class VehicleProfile:
 class ProfileSet:
     profiles: Dict[str, VehicleProfile]
     default_profile: str
+    ini_path: Optional[Path] = None      # where save_profiles() persists changes
 
     def names(self):
         return list(self.profiles.keys())
@@ -110,13 +111,17 @@ def load_profiles(ini_path: Optional[Path] = None,
     log folders (defaults to :func:`app_base_dir`).
     """
     base = base_dir or app_base_dir()
+    # Where GUI edits are written back: an explicit ini, else canbench.ini in the base dir.
+    save_target = Path(ini_path) if ini_path else (base / DEFAULT_INI_NAME)
 
     if ini_path is None:
         candidate = base / DEFAULT_INI_NAME
         ini_path = candidate if candidate.is_file() else None
 
     if ini_path is None or not Path(ini_path).is_file():
-        return builtin_profiles(base)
+        ps = builtin_profiles(base)
+        ps.ini_path = save_target
+        return ps
 
     cfg = configparser.ConfigParser()
     cfg.read(ini_path, encoding="utf-8")
@@ -143,4 +148,27 @@ def load_profiles(ini_path: Optional[Path] = None,
     if default_profile not in profiles:
         default_profile = next(iter(profiles))
 
-    return ProfileSet(profiles=profiles, default_profile=default_profile)
+    return ProfileSet(profiles=profiles, default_profile=default_profile, ini_path=save_target)
+
+
+def save_profiles(profile_set: ProfileSet) -> None:
+    """Write the profile set back to its ``ini_path`` (log_dir, bitrate, etc.).
+
+    Used by the GUI to persist a changed log folder. configparser does not keep
+    comments, so a short header is re-emitted.
+    """
+    if profile_set.ini_path is None:
+        return
+    cfg = configparser.ConfigParser()
+    cfg["general"] = {"default_profile": profile_set.default_profile}
+    for name, p in profile_set.profiles.items():
+        section = {"log_dir": str(p.log_dir), "bitrate": str(p.bitrate)}
+        if p.description:
+            section["description"] = p.description
+        cfg[f"profile:{name}"] = section
+    path = Path(profile_set.ini_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# canbench vehicle profiles (auto-updated by the GUI).\n")
+        f.write("# log_dir may be relative (to the app folder) or absolute; bitrate in bits/s.\n\n")
+        cfg.write(f)
