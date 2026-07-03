@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canbench import logio
+from canbench.buses import shutdown_bus
 from canbench.live.receiver import detect_all_can_interfaces
 
 # Configure logging
@@ -313,10 +314,7 @@ def main():
 
     finally:
         for bus_obj, desc in buses:
-            try:
-                bus_obj.shutdown()
-            except Exception:
-                pass
+            shutdown_bus(bus_obj)
 
     print()
     print("=" * 60)

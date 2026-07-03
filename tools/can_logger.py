@@ -90,10 +90,7 @@ def run_passthrough(interfaces, output_path, bitrate):
         finally:
             bridge.stop()
             for b in (bus_a, bus_b):
-                try:
-                    b.shutdown()
-                except Exception:
-                    pass
+                buses.shutdown_bus(b)
 
     logger.info(f"Wrote {count[0]} frames to {output_path}")
 

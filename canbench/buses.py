@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import can
 
-from .live.receiver import detect_all_can_interfaces
+from .live.receiver import detect_all_can_interfaces, release_gs_usb
 
 VIRTUAL_CHANNEL = "canbench-virtual"
 UDP_MULTICAST_GROUP = "239.99.0.1"
@@ -39,6 +39,15 @@ def list_interfaces(bitrate, brands=None, include_software=True):
     if include_software:
         ifaces = ifaces + software_interfaces()
     return ifaces
+
+
+def shutdown_bus(bus):
+    """Shut down a bus and fully release it (incl. the gs_usb pyusb handle)."""
+    try:
+        bus.shutdown()
+    except Exception:
+        pass
+    release_gs_usb(bus)
 
 
 def open_bus(iface, ch, bitrate, **extra):

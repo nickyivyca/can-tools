@@ -1,13 +1,19 @@
 """Proto logger window: pick a vehicle + interfaces, watch per-bus rates, log.
 
 Deliberately minimal (no decode -- that's Phase 3). The window:
-  - lets you pick a vehicle profile (sets bitrate + log folder)
-  - lists detected dongles plus the software (virtual/localhost) interfaces
-  - you tick which to capture, hit Start, and watch frames/sec, total, last-seen
-  - optionally writes a candump .log into the profile's folder
+  - pick a vehicle profile (sets bitrate + log folder from canbench.ini / defaults)
+  - lists detected dongles (real hardware). The in-process virtual bus is shown
+    only with --virtual; a localhost "network CAN" is added on demand.
+  - tick which dongles to capture, optionally set a per-line passthrough target,
+    hit Start, and watch frames/sec, total, last-seen
+  - writes a candump .log into the profile's folder
 
-All hardware/logging work happens in canbench.engine.CaptureEngine; this file is
-just the Qt shell that drives it and polls its TrafficMonitor on a timer.
+Ownership rule: only interfaces that are *enabled* (ticked) or are a passthrough
+endpoint get opened. An untouched dongle is left free for other programs (e.g.
+a real-world loopback test), even though it is listed here.
+
+All hardware/logging/forwarding happens in canbench.engine.CaptureEngine; this
+file is the Qt shell that drives it and polls its TrafficMonitor on a timer.
 """
 from __future__ import annotations
 
@@ -18,22 +24,42 @@ from pathlib import Path
 from PyQt5 import QtCore, QtWidgets
 
 from ..profiles import load_profiles
-from ..buses import list_interfaces, SOFTWARE_INTERFACES
+from ..buses import VIRTUAL_CHANNEL, UDP_MULTICAST_GROUP
+from ..live.receiver import detect_all_can_interfaces
 from ..engine import CaptureEngine
 
 REFRESH_MS = 500
 
+# Standard CAN bit rates (bps) offered in the dropdown, fastest first.
+STANDARD_BITRATES = [1000000, 800000, 500000, 250000, 125000, 100000,
+                     83333, 50000, 33333, 20000, 10000]
+
+COL_LOG, COL_IFACE, COL_PT, COL_RATE, COL_TOTAL, COL_SEEN = range(6)
+
+
+def _fmt_bitrate(bps: int) -> str:
+    if bps >= 1_000_000 and bps % 1_000_000 == 0:
+        return f"{bps // 1_000_000} Mbit/s"
+    if bps % 1000 == 0:
+        return f"{bps // 1000} kbit/s"
+    return f"{bps / 1000:.3f} kbit/s"
+
 
 class LoggerWindow(QtWidgets.QMainWindow):
-    def __init__(self, profiles=None):
+    def __init__(self, profiles=None, show_virtual=False, ini_path=None):
         super().__init__()
         self.setWindowTitle("canbench - CAN logger")
-        self.resize(720, 420)
-        self.profiles = profiles or load_profiles()
+        self.resize(820, 460)
+        self.profiles = profiles or load_profiles(ini_path=ini_path)
+        self.show_virtual = show_virtual
+
         self.engine: CaptureEngine | None = None
-        self.interfaces = []            # [(iface, ch, desc), ...] current table order
-        self._row_checks = {}           # row -> QCheckBox
-        self._selected_rows = []        # bus_id -> table row (set at start)
+        self.hw_interfaces = []        # detected hardware (iface, ch, desc)
+        self.extra_interfaces = []     # user-added network CAN (iface, ch, desc)
+        self.interfaces = []           # full current table order
+        self._row_checks = {}          # row -> QCheckBox
+        self._pt_combos = {}           # row -> QComboBox (passthrough target)
+        self._busid_to_row = {}        # bus_id -> table row, set at Start
 
         self._build_ui()
         if self.profiles.names():
@@ -56,12 +82,10 @@ class LoggerWindow(QtWidgets.QMainWindow):
 
         top.addSpacing(12)
         top.addWidget(QtWidgets.QLabel("Bitrate:"))
-        self.bitrate_spin = QtWidgets.QSpinBox()
-        self.bitrate_spin.setRange(1000, 1000000)
-        self.bitrate_spin.setSingleStep(1000)
-        self.bitrate_spin.setValue(500000)
-        self.bitrate_spin.setGroupSeparatorShown(True)
-        top.addWidget(self.bitrate_spin)
+        self.bitrate_combo = QtWidgets.QComboBox()
+        for bps in STANDARD_BITRATES:
+            self.bitrate_combo.addItem(_fmt_bitrate(bps), bps)
+        top.addWidget(self.bitrate_combo)
 
         top.addSpacing(12)
         self.log_check = QtWidgets.QCheckBox("Log to file")
@@ -78,15 +102,24 @@ class LoggerWindow(QtWidgets.QMainWindow):
         self.logdir_label.setStyleSheet("color: gray;")
         v.addWidget(self.logdir_label)
 
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Log", "Interface", "Frames/s", "Total", "Last seen"])
+        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Log", "Interface", "Passthrough →", "Frames/s", "Total", "Last seen"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
-        self.table.setColumnWidth(0, 44)
+        hdr.setSectionResizeMode(COL_IFACE, QtWidgets.QHeaderView.Stretch)
+        self.table.setColumnWidth(COL_LOG, 40)
+        self.table.setColumnWidth(COL_PT, 180)
         v.addWidget(self.table)
+
+        row2 = QtWidgets.QHBoxLayout()
+        self.add_net_btn = QtWidgets.QPushButton("Add network CAN…")
+        self.add_net_btn.clicked.connect(self.add_network_can)
+        row2.addWidget(self.add_net_btn)
+        row2.addStretch(1)
+        v.addLayout(row2)
 
         bottom = QtWidgets.QHBoxLayout()
         self.start_btn = QtWidgets.QPushButton("Start")
@@ -110,33 +143,91 @@ class LoggerWindow(QtWidgets.QMainWindow):
         if name not in self.profiles.profiles:
             return
         prof = self.profiles.get(name)
-        self.bitrate_spin.setValue(prof.bitrate)
+        self._set_bitrate(prof.bitrate)
         self.logdir_label.setText(f"Log folder: {prof.log_dir}")
+
+    def _set_bitrate(self, bps):
+        idx = self.bitrate_combo.findData(bps)
+        if idx < 0:
+            self.bitrate_combo.addItem(_fmt_bitrate(bps), bps)
+            idx = self.bitrate_combo.findData(bps)
+        self.bitrate_combo.setCurrentIndex(idx)
+
+    def current_bitrate(self) -> int:
+        return int(self.bitrate_combo.currentData())
 
     def refresh_interfaces(self):
         if self.engine and self.engine.running:
             return
-        bitrate = self.bitrate_spin.value()
-        self.interfaces = list_interfaces(bitrate)
+        self.hw_interfaces = detect_all_can_interfaces(self.current_bitrate())
+        self._rebuild_table()
+        n_net = len(self.extra_interfaces)
+        self.status.showMessage(
+            f"{len(self.hw_interfaces)} hardware"
+            + (f" + {n_net} network CAN" if n_net else "")
+            + (" + virtual" if self.show_virtual else ""))
+
+    def add_network_can(self):
+        if self.engine and self.engine.running:
+            return
+        group, ok = QtWidgets.QInputDialog.getText(
+            self, "Add network CAN",
+            "UDP multicast group (localhost network CAN):",
+            text=UDP_MULTICAST_GROUP)
+        if not ok or not group.strip():
+            return
+        group = group.strip()
+        self.extra_interfaces.append(("udp_multicast", group, f"Network CAN ({group})"))
+        self._rebuild_table()
+
+    def _current_interfaces(self):
+        ifaces = list(self.hw_interfaces)
+        if self.show_virtual:
+            ifaces.append(("virtual", VIRTUAL_CHANNEL, "Virtual (in-process)"))
+        ifaces += self.extra_interfaces
+        return ifaces
+
+    def _rebuild_table(self):
+        self.interfaces = self._current_interfaces()
         self._row_checks.clear()
+        self._pt_combos.clear()
         self.table.setRowCount(len(self.interfaces))
-        n_hw = 0
         for row, (iface, ch, desc) in enumerate(self.interfaces):
             chk = QtWidgets.QCheckBox()
-            is_hw = iface not in SOFTWARE_INTERFACES
-            chk.setChecked(is_hw)          # default: capture real dongles; software opt-in
-            n_hw += 1 if is_hw else 0
+            chk.setChecked(iface != "virtual")     # dongles + network CAN on by default; virtual opt-in
             holder = QtWidgets.QWidget()
             lay = QtWidgets.QHBoxLayout(holder)
             lay.addWidget(chk)
             lay.setAlignment(QtCore.Qt.AlignCenter)
             lay.setContentsMargins(0, 0, 0, 0)
-            self.table.setCellWidget(row, 0, holder)
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(desc))
-            for col in (2, 3, 4):
-                self.table.setItem(row, col, QtWidgets.QTableWidgetItem("-"))
+            self.table.setCellWidget(row, COL_LOG, holder)
             self._row_checks[row] = chk
-        self.status.showMessage(f"{n_hw} hardware + {len(self.interfaces) - n_hw} software interface(s)")
+
+            self.table.setItem(row, COL_IFACE, QtWidgets.QTableWidgetItem(desc))
+
+            combo = QtWidgets.QComboBox()
+            combo.addItem("(none)", None)
+            self.table.setCellWidget(row, COL_PT, combo)
+            self._pt_combos[row] = combo
+
+            for col in (COL_RATE, COL_TOTAL, COL_SEEN):
+                self.table.setItem(row, col, QtWidgets.QTableWidgetItem("-"))
+
+        self._rebuild_passthrough_options()
+
+    def _rebuild_passthrough_options(self):
+        for row, combo in self._pt_combos.items():
+            prev = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("(none)", None)
+            for other, (iface, ch, desc) in enumerate(self.interfaces):
+                if other == row:
+                    continue
+                combo.addItem(desc, other)
+            idx = combo.findData(prev)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
 
     # ---- start / stop ----------------------------------------------------
     def toggle(self):
@@ -146,25 +237,38 @@ class LoggerWindow(QtWidgets.QMainWindow):
             self._start()
 
     def _start(self):
-        selected = [(row, self.interfaces[row]) for row in sorted(self._row_checks)
-                    if self._row_checks[row].isChecked()]
-        if not selected:
-            QtWidgets.QMessageBox.warning(self, "No interfaces", "Tick at least one interface to capture.")
+        n = len(self.interfaces)
+        log_checked = {r for r in range(n) if self._row_checks[r].isChecked()}
+        pt_dest = {r: self._pt_combos[r].currentData() for r in range(n)}
+
+        active = set(log_checked)
+        for r, dest in pt_dest.items():
+            if dest is not None:
+                active.add(r)
+                active.add(dest)
+        if not active:
+            QtWidgets.QMessageBox.warning(self, "Nothing selected",
+                                          "Tick a dongle to log, or set a passthrough target.")
             return
 
-        self._selected_rows = [row for row, _ in selected]
-        chosen = [iface for _, iface in selected]
+        active_rows = sorted(active)
+        row_to_busid = {r: i for i, r in enumerate(active_rows)}
+        self._busid_to_row = {i: r for r, i in row_to_busid.items()}
+        opened = [self.interfaces[r] for r in active_rows]
+        capture_ids = {row_to_busid[r] for r in active_rows if r in log_checked}
+        routes = {row_to_busid[r]: row_to_busid[pt_dest[r]]
+                  for r in active_rows if pt_dest[r] is not None}
 
         log_path = None
-        if self.log_check.isChecked():
+        if self.log_check.isChecked() and capture_ids:
             prof = self.profiles.get(self.profile_combo.currentText())
             prof.log_dir.mkdir(parents=True, exist_ok=True)
             stem = f"canlog_{datetime.datetime.now():%Y%m%d_%H%M%S}.log"
             log_path = str(prof.log_dir / stem)
 
-        self.engine = CaptureEngine(bitrate=self.bitrate_spin.value())
-        result = self.engine.start(chosen, log_path=log_path)
-
+        self.engine = CaptureEngine(bitrate=self.current_bitrate())
+        result = self.engine.start(opened, log_path=log_path,
+                                   capture_ids=capture_ids, routes=routes)
         if not result.opened:
             msgs = "\n".join(f"{d}: {e}" for d, e in result.failed) or "no interfaces opened"
             QtWidgets.QMessageBox.critical(self, "Start failed", msgs)
@@ -174,11 +278,18 @@ class LoggerWindow(QtWidgets.QMainWindow):
             self.status.showMessage("Some interfaces failed: "
                                     + "; ".join(d for d, _ in result.failed))
 
+        # clear stat cells for rows not opened this run
+        for row in range(len(self.interfaces)):
+            if row not in self._busid_to_row.values():
+                for col in (COL_RATE, COL_TOTAL, COL_SEEN):
+                    self.table.item(row, col).setText("-")
+
         self._set_controls_enabled(False)
         self.start_btn.setText("Stop")
         self.timer.start()
         where = f"logging to {log_path}" if log_path else "monitor only (not logging)"
-        self.status.showMessage(f"Running - {where}")
+        extra = f", {len(routes)} passthrough route(s)" if routes else ""
+        self.status.showMessage(f"Running - {where}{extra}")
 
     def _stop(self):
         path = self.engine.log_path if self.engine else None
@@ -189,18 +300,21 @@ class LoggerWindow(QtWidgets.QMainWindow):
         self._set_controls_enabled(True)
         self.start_btn.setText("Start")
         if path:
-            self.status.showMessage(f"Stopped - wrote {total} frames to {path}")
+            self.status.showMessage(f"Stopped - wrote frames to {path}")
         else:
-            self.status.showMessage(f"Stopped - {total} frames (not logged)")
+            self.status.showMessage(f"Stopped - {total} frames seen (not logged)")
         self.engine = None
 
     def _set_controls_enabled(self, enabled):
         self.profile_combo.setEnabled(enabled)
-        self.bitrate_spin.setEnabled(enabled)
+        self.bitrate_combo.setEnabled(enabled)
         self.log_check.setEnabled(enabled)
         self.refresh_btn.setEnabled(enabled)
+        self.add_net_btn.setEnabled(enabled)
         for chk in self._row_checks.values():
             chk.setEnabled(enabled)
+        for combo in self._pt_combos.values():
+            combo.setEnabled(enabled)
 
     # ---- live stats ------------------------------------------------------
     def _refresh_stats(self):
@@ -208,14 +322,14 @@ class LoggerWindow(QtWidgets.QMainWindow):
             return
         stats = self.engine.monitor.poll()
         now = time.time()
-        for bus_id, row in enumerate(self._selected_rows):
+        for bus_id, row in self._busid_to_row.items():
             st = stats.get(bus_id)
             if st is None:
                 continue
-            self.table.item(row, 2).setText(f"{st.rate_hz:,.0f}")
-            self.table.item(row, 3).setText(f"{st.total:,}")
+            self.table.item(row, COL_RATE).setText(f"{st.rate_hz:,.0f}")
+            self.table.item(row, COL_TOTAL).setText(f"{st.total:,}")
             if st.last_seen is not None:
-                self.table.item(row, 4).setText(f"{now - st.last_seen:.1f}s ago")
+                self.table.item(row, COL_SEEN).setText(f"{now - st.last_seen:.1f}s ago")
         self.total_label.setText(f"Total: {self.engine.total:,} frames")
 
     def closeEvent(self, event):

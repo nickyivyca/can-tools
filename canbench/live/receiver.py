@@ -52,6 +52,24 @@ def _ensure_gs_usb_libusb():
         _gs_usb_libusb_ready = False
     return _gs_usb_libusb_ready
 
+def release_gs_usb(bus):
+    """Fully release a gs_usb (Innomaker) device so it can be reopened in-process.
+
+    python-can's ``GsUsbBus.shutdown()`` stops the device but does not dispose the
+    pyusb handle, so a second open of the same device in one process fails with
+    ``USBError: Access denied``. Disposing the underlying pyusb resources frees it.
+    No-op for every other backend. Call this after ``bus.shutdown()``.
+    """
+    dev = getattr(getattr(bus, "gs_usb", None), "gs_usb", None)
+    if dev is None:
+        return
+    try:
+        import usb.util
+        usb.util.dispose_resources(dev)
+    except Exception as e:
+        logger.debug(f"gs_usb resource dispose failed: {e}")
+
+
 # --- ixxat USB reset coordination ---
 # Multiple bus threads share one physical USB reset; use a lock + cooldown so
 # only one thread performs the reset while others wait and then skip.
@@ -203,6 +221,7 @@ class CANBusLogger:
             self.bus.shutdown()
         except Exception:
             pass
+        release_gs_usb(self.bus)
         logger.info(f"Bus {self.bus_id} logging stopped")
 
 

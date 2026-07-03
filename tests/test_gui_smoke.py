@@ -1,7 +1,8 @@
 """Headless smoke test of the LoggerWindow (Qt offscreen, virtual bus, no display).
 
-Drives the real GUI code path: build window -> select only the in-process virtual
-interface -> Start -> push frames on that virtual channel -> poll stats -> Stop.
+Drives the real GUI code path: build window (--virtual so the in-process bus is
+listed) -> select ONLY the virtual interface -> Start -> push frames -> poll stats
+-> Stop. No display, no hardware owned.
 """
 import os
 import sys
@@ -17,16 +18,16 @@ from PyQt5 import QtWidgets
 
 from canbench import buses
 from canbench.gui import LoggerWindow
+from canbench.gui.logger_window import COL_TOTAL
 
 
 def test_window_start_monitor_stop():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    win = LoggerWindow()
-    # software interfaces are always listed, so there is always >=1 row
+    win = LoggerWindow(show_virtual=True)      # in-process virtual bus is listed
     assert win.table.rowCount() >= 1
 
-    # capture ONLY the in-process virtual interface (avoid touching real dongles)
+    # capture ONLY the in-process virtual interface (don't own real dongles)
     virt_row = None
     for row, (iface, ch, desc) in enumerate(win.interfaces):
         want = (iface == "virtual" and ch == buses.VIRTUAL_CHANNEL)
@@ -35,8 +36,8 @@ def test_window_start_monitor_stop():
             virt_row = row
     assert virt_row is not None
 
-    win.log_check.setChecked(False)      # monitor only; don't create files
-    win.toggle()                          # Start
+    win.log_check.setChecked(False)            # monitor only; no file
+    win.toggle()                                # Start
     assert win.engine is not None and win.engine.running
 
     try:
@@ -48,12 +49,45 @@ def test_window_start_monitor_stop():
         tx.shutdown()
 
         win._refresh_stats()
-        total_cell = win.table.item(virt_row, 3).text().replace(",", "")
-        assert int(total_cell) == 5
+        total = int(win.table.item(virt_row, COL_TOTAL).text().replace(",", ""))
+        assert total == 5, total
     finally:
-        win.toggle()                      # Stop
+        win.toggle()                            # Stop
         assert win.engine is None
 
+    win.close()
+
+
+def test_profile_bitrate_applied():
+    """Selecting a vehicle profile drives the bitrate (profile-configurable)."""
+    import tempfile
+    base = Path(tempfile.mkdtemp())
+    ini = base / "canbench.ini"
+    ini.write_text(
+        "[general]\ndefault_profile = vtrux\n\n"
+        "[profile:vtrux]\nlog_dir = V\nbitrate = 250000\n\n"
+        "[profile:coda]\nlog_dir = C\nbitrate = 125000\n",
+        encoding="utf-8")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = LoggerWindow(ini_path=ini)
+    assert win.current_bitrate() == 250000            # vtrux default
+    win.profile_combo.setCurrentText("coda")
+    assert win.current_bitrate() == 125000            # coda profile bitrate
+    win.close()
+
+
+def test_add_network_can_and_passthrough_options():
+    """A network-CAN row can be added; passthrough combos list the other rows."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = LoggerWindow()
+    before = win.table.rowCount()
+    win.extra_interfaces.append(("udp_multicast", "239.1.2.3", "Network CAN (239.1.2.3)"))
+    win._rebuild_table()
+    assert win.table.rowCount() == before + 1
+    last = win.table.rowCount() - 1
+    assert win.interfaces[last][0] == "udp_multicast"
+    combo = win._pt_combos[last]
+    assert combo.count() == 1 + before               # "(none)" + every other row
     win.close()
 
 
