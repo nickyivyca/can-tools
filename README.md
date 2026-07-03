@@ -16,7 +16,7 @@ separately; nothing in here depends on it.
 | `can_logger` / `can_replayer` (CLI) | Working — candump / SocketCAN default format |
 | Passthrough bridge (`can_logger --passthrough`) + virtual/udp test bus | Working |
 | Desktop GUI logger (`can_gui.py`): profiles, dongle select, per-bus frames/sec, candump logging | Phase 2 proto — working, iterating |
-| Windows packaging (PyInstaller onedir) | Phase 2 — pending |
+| Windows packaging (PyInstaller onedir zip) | Working — `packaging/build.py`; gs_usb/libusb bundled, verified in the frozen exe |
 | Live signal decode | Phase 3 (planned) |
 
 ## Log format
