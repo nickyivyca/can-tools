@@ -25,7 +25,8 @@ from PyQt5 import QtCore, QtWidgets
 
 from ..profiles import load_profiles
 from ..buses import VIRTUAL_CHANNEL, UDP_MULTICAST_GROUP
-from ..live.receiver import detect_all_can_interfaces
+from ..live.receiver import (detect_all_can_interfaces, reset_gs_usb_cache,
+                             gs_usb_backend_available)
 from ..engine import CaptureEngine
 
 REFRESH_MS = 500
@@ -159,13 +160,19 @@ class LoggerWindow(QtWidgets.QMainWindow):
     def refresh_interfaces(self):
         if self.engine and self.engine.running:
             return
+        reset_gs_usb_cache()      # re-probe gs_usb each Refresh (recover from a transient miss)
         self.hw_interfaces = detect_all_can_interfaces(self.current_bitrate())
         self._rebuild_table()
         n_net = len(self.extra_interfaces)
-        self.status.showMessage(
-            f"{len(self.hw_interfaces)} hardware"
-            + (f" + {n_net} network CAN" if n_net else "")
-            + (" + virtual" if self.show_virtual else ""))
+        msg = (f"{len(self.hw_interfaces)} hardware"
+               + (f" + {n_net} network CAN" if n_net else "")
+               + (" + virtual" if self.show_virtual else ""))
+        if "gs_usb" not in {i[0] for i in self.hw_interfaces}:
+            if not gs_usb_backend_available():
+                msg += "  |  gs_usb/Innomaker backend NOT available (need python-can[gs_usb] + libusb-package in this Python)"
+            else:
+                msg += "  |  no gs_usb/Innomaker device found (check USB / try Refresh)"
+        self.status.showMessage(msg)
 
     def add_network_can(self):
         if self.engine and self.engine.running:

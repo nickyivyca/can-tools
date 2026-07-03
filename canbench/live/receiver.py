@@ -52,6 +52,21 @@ def _ensure_gs_usb_libusb():
         _gs_usb_libusb_ready = False
     return _gs_usb_libusb_ready
 
+
+def reset_gs_usb_cache():
+    """Forget the cached gs_usb libusb-backend result so detection re-probes it.
+
+    Call before re-running detection (e.g. a GUI 'Refresh') so a transient
+    first-time failure can recover without restarting the process.
+    """
+    global _gs_usb_libusb_ready
+    _gs_usb_libusb_ready = None
+
+
+def gs_usb_backend_available():
+    """True if the gs_usb (Innomaker) libusb backend is usable in this process."""
+    return _ensure_gs_usb_libusb()
+
 def release_gs_usb(bus):
     """Fully release a gs_usb (Innomaker) device so it can be reopened in-process.
 
