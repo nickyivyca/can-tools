@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import can
 from canbench.live.receiver import CANBusLogger, detect_all_can_interfaces
-from canbench import logio
+from canbench import logio, buses
+from canbench.passthrough import PassthroughBridge
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,60 @@ logger = logging.getLogger(__name__)
 # Suppress python-can debug noise unless we want it
 can_logger = logging.getLogger('can')
 can_logger.setLevel(logging.WARNING)
+
+
+def run_passthrough(interfaces, output_path, bitrate):
+    """Bridge exactly two interfaces, logging each original by its source bus."""
+    if len(interfaces) != 2:
+        logger.error(f"--passthrough needs exactly 2 interfaces; detected {len(interfaces)}.")
+        logger.error("Narrow to the two dongles to bridge with --brands.")
+        sys.exit(1)
+
+    (ia, ca, da), (ib, cb, db) = interfaces
+    bus_a = buses.open_bus(ia, ca, bitrate)
+    bus_b = buses.open_bus(ib, cb, bitrate)
+    logger.info(f"Passthrough: bus 0 = {da}  <->  bus 1 = {db}")
+    logger.info(f"Logging sourced frames to: {output_path}")
+    logger.info("Press Ctrl+C to stop")
+    logger.info("")
+
+    shutdown_event = threading.Event()
+
+    def signal_handler(sig, frame):
+        logger.info("\nShutdown signal received...")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    count = [0]
+    with logio.open_writer(output_path) as writer:
+        def on_frame(src_id, msg):
+            msg.channel = logio.bus_channel(src_id)
+            msg.timestamp = time.time()
+            writer(msg)
+            count[0] += 1
+
+        bridge = PassthroughBridge(bus_a, bus_b, on_frame=on_frame)
+        bridge.start()
+        try:
+            last_status = time.time()
+            while not shutdown_event.is_set():
+                time.sleep(0.25)
+                now = time.time()
+                if now - last_status >= 5.0:
+                    logger.info(f"Bridged {count[0]} frames "
+                                f"(bus0={bridge.counts[0]}, bus1={bridge.counts[1]})...")
+                    last_status = now
+        finally:
+            bridge.stop()
+            for b in (bus_a, bus_b):
+                try:
+                    b.shutdown()
+                except Exception:
+                    pass
+
+    logger.info(f"Wrote {count[0]} frames to {output_path}")
 
 
 def main():
@@ -70,6 +125,13 @@ def main():
         default=None,
         help='Comma-separated list of dongle brands to capture from '
              '(e.g. kvaser or ixxat,kvaser). Default: auto-detect all brands.'
+    )
+    parser.add_argument(
+        '--passthrough',
+        action='store_true',
+        help='Passthrough bridge mode: forward frames between exactly 2 dongles '
+             '(narrow with --brands if more are connected), logging each original '
+             'frame tagged by the bus it was sourced on.'
     )
     parser.add_argument(
         '--debug',
@@ -134,6 +196,10 @@ def main():
     for i, (iface, ch, desc) in enumerate(interfaces):
         logger.info(f"  Bus {i} ({logio.bus_channel(i)}): {desc}")
     logger.info("")
+
+    if args.passthrough:
+        run_passthrough(interfaces, args.output, args.bitrate)
+        return
 
     # Create buses
     buses = []

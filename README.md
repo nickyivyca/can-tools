@@ -14,7 +14,9 @@ separately; nothing in here depends on it.
 |------|-------|
 | Hardware layer (`canbench.live`) | Working — ixxat, kvaser, pcan, socketcan, gs_usb |
 | `can_logger` / `can_replayer` (CLI) | Working — candump / SocketCAN default format |
-| GUI logger, vehicle profiles, passthrough, packaging | Phase 2 (in progress) |
+| Passthrough bridge (`can_logger --passthrough`) + virtual/udp test bus | Working |
+| Desktop GUI logger (`can_gui.py`): profiles, dongle select, per-bus frames/sec, candump logging | Phase 2 proto — working, iterating |
+| Windows packaging (PyInstaller onedir) | Phase 2 — pending |
 | Live signal decode | Phase 3 (planned) |
 
 ## Log format
