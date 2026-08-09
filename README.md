@@ -61,6 +61,7 @@ overflow recovery.
 ```
 canbench/
   live/          dongle detection, per-bus RX threads, ixxat USB reset
+                 (see live/pcan-busoff-recovery.md for the PCAN bus-off / no-ACK failure mode)
   logio.py       python-can candump read/write wrappers
   gui/           PyQt logger GUI                          (Phase 2)
   passthrough.py two-dongle bridge                        (Phase 2)
