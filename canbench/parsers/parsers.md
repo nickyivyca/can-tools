@@ -1,7 +1,7 @@
 # canbench.parsers Reference
 
 Log readers for the formats canbench reads itself: BUSMASTER (the main capture format of
-the reverse-engineering project this came from), candump / SocketCAN, PEAK TRC 1.x / 2.0,
+the reverse-engineering project this came from), candump / SocketCAN, PEAK TRC 1.0-2.1,
 Vector ASC and SavvyCAN CSV, with format detection **by content**, not extension. Pure
 standard library; nothing here imports python-can or anything outside canbench.
 
@@ -19,6 +19,10 @@ from canbench.parsers import parse_file
 for frame in parse_file("capture.log"):          # CANFrame objects
     print(frame.timestamp, frame.bus, frame.arbitration_id, frame.data)
 ```
+
+Non-frame lines (error frames, controller status, error counters, user events) come back as
+`CANEvent` records only when asked for, `parse_file(path, include_events=True)`, interleaved
+with the frames in file order; test with `isinstance(rec, CANFrame)`.
 
 > **Staleness check:** Each section shows a `Source last modified` timestamp. If the `.py` file's mtime is newer than the timestamp shown here, re-read the source before relying on this documentation. Timestamps MUST include both date and time (`YYYY-MM-DD HH:MM:SS`).
 
@@ -38,7 +42,7 @@ dongle insertion order. Identify buses by content.
 Every `parse_file` yields frames; none returns a list. A second pass over the same result sees **nothing**, with no error. The usual trap is a bus-identification pass followed by an analysis pass: the second one comes back empty and reads as "the ID is absent". If you need more than one pass, materialise it first: `frames = list(parse_file(path))`. Found 2026-10-26, when an HVAC scratchpad reported every ID, its bus anchors included, as missing from all 20 captures.
 
 ## base.py — Core Data Types
-*Source last modified: 2026-10-28 15:54:10*
+*Source last modified: 2026-10-30 18:15:46*
 
 ### `CANFrame` dataclass
 
@@ -53,7 +57,11 @@ class CANFrame:
     dlc: int               # data length code
     is_tx: bool = False    # True = transmitted frame
     is_error: bool = False # True = adapter error frame; arbitration_id is the error-class mask
+    inferred_error: bool = False  # True = a data frame marked by inferred_errors.py
 ```
+
+`inferred_error` is set only by `parse_file(..., mark_inferred_errors=True)` (see
+`inferred_errors.py` below) and never on a line the log wrote as an error.
 
 All parsers produce `CANFrame` objects. Timestamps are always in **seconds**. The BUSMASTER parser converts from `HH:MM:SS:TTTT` (TTTT = 10 kHz ticks, 0.1 ms resolution).
 
@@ -72,10 +80,38 @@ class BaseParser(ABC):
 - `detect(lines)` — given the first few lines of a file, returns True if this parser can handle it
 - `parse_file(path, absolute=False)` — parse the file, yielding CANFrame objects (a generator, not a list). When `absolute=True`, timestamps are not zeroed to the first frame (needed for stitching T-chunk files that share a timeline)
 
+### `CANEvent` dataclass
+
+```python
+@dataclass(slots=True)
+class CANEvent:
+    timestamp: float              # same time base as the file's frames
+    bus: int | None               # None for a TRC event written for all buses ('-')
+    kind: str                     # the log's own tag, see below
+    data: bytes = b""
+    is_tx: bool = False
+    arbitration_id: int | None = None
+    text: str = ""                # EV user text
+```
+
+A log line that is not a CAN frame, **reported as written**: `kind` is the log's own tag and
+`data` its own bytes, so a BUSMASTER `ERR` (SocketCAN error-frame layout) and a TRC `ER`
+(PEAK layout) stay distinguishable. Yielded only with `include_events=True`.
+
+| kind | Source | data |
+|---|---|---|
+| `ERR` | BUSMASTER | SocketCAN error frame (linux/can/error.h); class mask in `arbitration_id` |
+| `ER` | TRC 2.x | 5 bytes: error type (1 bit, 2 form, 4 stuff, 8 other), direction (0 tx, 1 rx), bit position, RX counter, TX counter |
+| `ST` | TRC 2.x | 4-byte hardware status, MSB first: `0x02` OVERRUN, `0x08` BUSWARNING, `0x40000` BUSPASSIVE, `0x10` BUSOFF |
+| `EC` | TRC 2.x | 2 bytes: RX, TX error counter, written when a counter decreases |
+| `EV` | TRC 2.1+ | none; user text in `text` |
+| `Error` | TRC 1.x | 4 bytes: direction, bit position, RX, TX counter; error type in `arbitration_id` |
+| `Warng` | TRC 1.x | 4-byte error-warning code, MSB first |
+
 ---
 
 ## busmaster.py — BUSMASTER `.log` Parser
-*Source last modified: 2026-10-28 15:54:10*
+*Source last modified: 2026-10-30 18:17:26*
 
 **Changed 2026-10-28 — error-frame (`ERR`) lines.** The Android logger now writes the
 adapter's CAN error frames as `HH:MM:SS:TTTT Rx <ch> 0x<class mask> ERR <dlc> <bytes>`
@@ -140,9 +176,13 @@ Inherits from `BaseParser`.
 
 Returns `True` if any sample line matches `***BUSMASTER` or `***PROTOCOL CAN***` (case-insensitive).
 
-#### `parse_file(path, *, absolute: bool = False, include_errors: bool = False) -> Iterator[CANFrame]`
+#### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False) -> Iterator[CANFrame | CANEvent]`
 
-Streams through a BUSMASTER log, yielding one `CANFrame` per data line. Skips header/metadata lines (those starting with `***`), and `ERR` error-frame lines unless `include_errors=True` (see the 2026-10-28 note above).
+Streams through a BUSMASTER log, yielding one `CANFrame` per data line. Skips header/metadata lines (those starting with `***`), and `ERR` error-frame lines unless asked for: `include_events=True` yields them as `CANEvent(kind="ERR")`, the form every parser uses for non-frame lines; `include_errors=True` yields them as `CANFrame(is_error=True)`, the older form kept for existing callers (see the 2026-10-28 note above). `include_events` wins if both are given.
+
+#### `channel_adapters(path) -> dict[int, str]` (module function)
+
+Adapter name per channel from the header, e.g. `{1: "Innomaker"}` for the Android logger's `***CHANNEL 1 - Innomaker - 500000 bps***`. Empty if the header names none.
 
 **Timestamp handling:**
 - Frame timestamps in the file are **session-relative** (reset to 0 at logging start), in `HH:MM:SS:TTTT` format where TTTT = 10 kHz ticks (0.1 ms, NOT milliseconds).
@@ -190,9 +230,19 @@ Returns `True` if at least 2 non-comment lines match the candump pattern `(times
 ---
 
 ## peak_trc.py — PEAK PCAN TRC Parser
-*Source last modified: 2026-02-16 00:42:14*
+*Source last modified: 2026-10-30 18:16:43*
 
-Parser for PEAK PCAN Trace (`.trc`) log files. Supports both version 1.1 and version 2.0 formats, auto-detecting from the `;$FILEVERSION=` header.
+Parser for PEAK PCAN Trace (`.trc`) log files, versions 1.0 to 2.1, written against PEAK-System's "PEAK CAN TRC File Format" (edition 2025-08-04). Version 3.0 files are read for their CAN and CAN FD lines. The version comes from `;$FILEVERSION=`; a file without it is 1.0.
+
+**Rewritten 2026-10-30.** The earlier parser read the time offset as seconds, making every interval 1000x too long, and matched no 2.0 data line at all, so a PCAN-View 2.0 trace gave zero frames. No TRC file had been read through it on the corpus.
+
+| Version | Line layout |
+|---|---|
+| 1.0 | `N) O ID DLC data`; `ERROR` in the data field = error frame, ID `FFFFFFFF` = warning, `RTR` = remote request |
+| 1.1 | `N) O Type ID DLC data`, Type `Rx` / `Tx` / `Warng` / `Error` |
+| 1.2 | `N) O Bus Type ID DLC data` |
+| 1.3 | `N) O Bus Type ID - DLC data` (Reserved column) |
+| 2.0, 2.1, 3.0 | the columns named by `;$COLUMNS=` (2.0 e.g. `N,O,T,I,d,l,D`, 2.1 e.g. `N,O,T,B,I,d,R,L,D`); types `DT FD FB FE BI RR ST ER EC EV` (3.0 adds `XL`) |
 
 ### `PeakTrcParser` class
 
@@ -202,17 +252,21 @@ Inherits from `BaseParser`.
 
 Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True` if the sample has both `;`-prefixed headers and numbered data lines.
 
-#### `parse_file(path, *, absolute: bool = False) -> Iterator[CANFrame]`
+#### `parse_file(path, *, absolute: bool = False, include_events: bool = False) -> Iterator[CANFrame | CANEvent]`
 
-Selects v1.1 vs v2.0 regex based on header. Falls back to the other version's regex if primary fails.
+**Timestamps:** the time offset is in **milliseconds** in every version. Default: the first data line of any kind (frame or event) is t=0, so times do not depend on `include_events`. `absolute=True`: seconds from midnight of `;$STARTTIME` plus the offset, like BUSMASTER's absolute mode.
 
-**Timestamps:** Relative to capture start. The `absolute` parameter is accepted but not implemented.
+**Non-frame lines:** `ER`, `ST`, `EC`, `EV` (1.x `Error`, `Warng`) become `CANEvent` records, yielded only with `include_events=True`. In 2.0 the ID and length columns of `ER` / `ST` / `EC` lines are empty; from 2.1 they hold `-` and a length.
 
-**Extended ID:** Inferred from value (ID > `0x7FF`).
+**Extended ID:** 8 ID digits, or a value above `0x7FF`.
 
-**Bus number:** Always 0 — TRC files do not indicate channel.
+**Bus number:** from the Bus column (1.2, 1.3, 2.1 `B`); bus 1 when the file has none. An `EV` written for all buses (`-`) has `bus=None`.
 
-**Error handling:** Malformed lines are silently skipped.
+**Skipped lines:** remote requests (`RR`, `RTR`), CAN XL frames and lines that do not parse; each is counted in the parser's `skipped` Counter after a full pass.
+
+#### `start_time(path) -> float | None` (module function)
+
+Unix time of `;$STARTTIME` (days since 1899-12-30). The header is the recorder's local time and is treated as UTC, as `canbench.logio.busmaster_start` does, so deltas are exact.
 
 ---
 
@@ -283,8 +337,26 @@ frames are silently skipped.
 
 ---
 
+## inferred_errors.py — Error Reports Written as Data Frames
+*Source last modified: 2026-10-30 18:17:18*
+
+Android loggers built before 2026-10-28 wrote each gs_usb error report from an Innomaker adapter as a plain standard frame: the ID is the SocketCAN error-class mask and the 8 bytes follow linux/can/error.h. The same IDs are real message IDs elsewhere (Coda C CAN `0x004` / `0x00C` are cell voltages), so the ID alone cannot tell them apart.
+
+The rule, validated on 3,643 captures and approved 2026-10-30 (reverse-it `tools/artifacts/error-report-sweep/README.md`). A frame is marked only when all three hold:
+
+1. **Capture gate:** the BUSMASTER header names an Innomaker and the file has no `ERR` lines.
+2. **ID gate:** a standard ID in `INFERRED_ERROR_IDS` (`0x004`, `0x00C`, `0x024`), the masks the Innomaker was measured to emit. Add others only from a measurement.
+3. **Payload gate:** `layout_ok(id, data)`, or the payload is all zero and no frame of that ID on that channel in that capture fails `layout_ok`.
+
+- `layout_ok(arb_id, data) -> bool` — 8 bytes; a byte whose class bit is clear is zero; controller code at most `0x40`, location code at most `0x1F`.
+- `inferred_error_marker(path)` — reads the file once and returns a `frame -> bool` function, or `None` when the capture gate fails. `parse_file(..., mark_inferred_errors=True)` uses it.
+
+Marking never drops a frame; a caller that wants the reports out filters on `frame.inferred_error`.
+
+---
+
 ## autodetect.py — Format Auto-Detection & Convenience Entry Point
-*Source last modified: 2026-10-28 15:54:10*
+*Source last modified: 2026-10-30 18:17:43*
 
 Automatic format detection and the primary public entry point for all log parsing.
 
@@ -298,9 +370,9 @@ Reads the first ~20 non-empty lines and tries each parser's `detect()` in priori
 
 Returns the first matching parser instance. Raises `ValueError` if none match.
 
-### `parse_file(path, *, absolute: bool = False, include_errors: bool = False) -> Iterator[CANFrame]`
+### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False, mark_inferred_errors: bool = False) -> Iterator[CANFrame | CANEvent]`
 
-One-step convenience: detects format, then delegates to the matched parser's `parse_file`. `include_errors` is passed only to the BUSMASTER parser; the other formats have no error frames here.
+One-step convenience: detects format, then delegates to the matched parser's `parse_file`. `include_errors` is passed only to the BUSMASTER parser. `include_events` is passed to the BUSMASTER and TRC parsers; the other formats have no non-frame lines here. `mark_inferred_errors` applies the `inferred_errors.py` rule (BUSMASTER only; it reads the file twice).
 
 ```python
 from canbench.parsers import parse_file

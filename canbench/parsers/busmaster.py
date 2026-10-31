@@ -6,7 +6,8 @@ BUSMASTER log format (v3.x):
     - Timestamp TTTT is 10 kHz ticks (0.1 ms resolution)
     - Type 's' = standard (11-bit), 'x' = extended (29-bit)
     - Type 'ERR' = error frame (Android logger, 2026-10-28 on); yielded only
-      with parse_file(..., include_errors=True)
+      with parse_file(..., include_events=True) as a CANEvent, or with
+      include_errors=True as a CANFrame with is_error set (the older form)
     - Supports mid-file session restarts
 """
 from __future__ import annotations
@@ -15,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANFrame
+from .base import BaseParser, CANEvent, CANFrame
 
 # Matches a BUSMASTER data line (not a header/metadata line).
 # Groups: timestamp, tx/rx, channel, id, type, dlc, remaining data bytes
@@ -130,6 +131,28 @@ def _error_frame(m: re.Match, timestamp: float, hex_mode: bool) -> CANFrame:
     )
 
 
+_CHANNEL_LINE_RE = re.compile(r"^\*\*\*CHANNEL\s+(\d+)\s+-\s+(.*?)\s+-\s+.*\*\*\*$",
+                              re.IGNORECASE)
+
+
+def channel_adapters(path: Path | str) -> dict[int, str]:
+    """Adapter name per channel from the header, e.g. ``{1: "Innomaker"}`` for
+    ``***CHANNEL 1 - Innomaker - 500000 bps***`` (the Android logger's form).
+    Reads only up to the first data line; empty if the header names none."""
+    out: dict[int, str] = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if not line.startswith("***"):
+                break
+            m = _CHANNEL_LINE_RE.match(line)
+            if m:
+                out[int(m.group(1))] = m.group(2).strip()
+    return out
+
+
 class BusmasterParser(BaseParser):
     """Parser for BUSMASTER CAN log files."""
 
@@ -215,7 +238,8 @@ class BusmasterParser(BaseParser):
         return channel_ids, channel_counts, last_ts
 
     def parse_file(self, path: Path | str, *, absolute: bool = False,
-                   include_errors: bool = False) -> Iterator[CANFrame]:
+                   include_errors: bool = False,
+                   include_events: bool = False) -> Iterator[CANFrame | CANEvent]:
         """Parse a BUSMASTER log file, yielding CANFrame objects.
 
         By default the first frame's timestamp becomes t=0 and all
@@ -231,6 +255,11 @@ class BusmasterParser(BaseParser):
         before the fix carry the same reports as ordinary data frames
         ``0x004`` / ``0x00C``; see android-app/notes/outstanding-changes.md
         Bug 11.
+
+        With *include_events* an ``ERR`` line is yielded instead as a
+        ``CANEvent`` of kind ``"ERR"`` (class mask in ``arbitration_id``),
+        the record type every parser uses for non-frame lines; it takes
+        precedence over *include_errors*.
 
         If *absolute* is True, each frame's session-relative timestamp is
         offset by the wall-clock HH:MM:SS from the file's
@@ -311,7 +340,11 @@ class BusmasterParser(BaseParser):
                     timestamp = rel_time + day_offset - t_origin
 
                 if is_error:
-                    if include_errors:
+                    if include_events:
+                        ef = _error_frame(m, timestamp, hex_mode)
+                        yield CANEvent(timestamp, ef.bus, "ERR", ef.data, ef.is_tx,
+                                       ef.arbitration_id)
+                    elif include_errors:
                         yield _error_frame(m, timestamp, hex_mode)
                     continue
 

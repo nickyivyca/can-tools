@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANFrame
+from .base import BaseParser, CANEvent, CANFrame
 from .busmaster import BusmasterParser
 from .candump import CandumpParser
 from .peak_trc import PeakTrcParser
@@ -75,7 +75,8 @@ def detect_format(path: Path | str) -> BaseParser:
 
 
 def parse_file(path: Path | str, *, absolute: bool = False,
-               include_errors: bool = False) -> Iterator[CANFrame]:
+               include_errors: bool = False, include_events: bool = False,
+               mark_inferred_errors: bool = False) -> Iterator[CANFrame | CANEvent]:
     """Auto-detect format and parse a CAN log file, yielding CANFrame objects.
 
     This is the main convenience entry point. It combines ``detect_format``
@@ -91,14 +92,37 @@ def parse_file(path: Path | str, *, absolute: bool = False,
     include_errors : bool
         If True, also yield error frames (``CANFrame.is_error``). Only the
         BUSMASTER parser has them (``ERR`` lines); other formats ignore this.
+    include_events : bool
+        If True, also yield the log's non-frame lines as ``CANEvent`` records,
+        in file order: BUSMASTER ``ERR``; TRC ``ER``, ``ST``, ``EC``, ``EV``
+        (1.x ``Error``, ``Warng``).  Takes precedence over *include_errors*
+        for an ``ERR`` line.  Formats without such lines ignore this.
+    mark_inferred_errors : bool
+        If True, set ``CANFrame.inferred_error`` on data frames that the rule
+        in ``inferred_errors.py`` identifies as adapter error reports written
+        as ordinary frames.  Reads the file twice.  Never drops a frame.
 
     Yields
     ------
-    CANFrame
-        Parsed CAN frames in chronological order.
+    CANFrame, CANEvent
+        Frames (and events, if asked for) in file order.
     """
     parser = detect_format(path)
-    if include_errors and isinstance(parser, BusmasterParser):
-        yield from parser.parse_file(path, absolute=absolute, include_errors=True)
+    if isinstance(parser, BusmasterParser):
+        records = parser.parse_file(path, absolute=absolute, include_errors=include_errors,
+                                    include_events=include_events)
+    elif isinstance(parser, PeakTrcParser):
+        records = parser.parse_file(path, absolute=absolute, include_events=include_events)
     else:
-        yield from parser.parse_file(path, absolute=absolute)
+        records = parser.parse_file(path, absolute=absolute)
+    marked = None
+    if mark_inferred_errors and isinstance(parser, BusmasterParser):
+        from .inferred_errors import inferred_error_marker
+        marked = inferred_error_marker(path)
+    if marked is None:
+        yield from records
+        return
+    for rec in records:
+        if isinstance(rec, CANFrame) and not rec.is_error and marked(rec):
+            rec.inferred_error = True
+        yield rec
