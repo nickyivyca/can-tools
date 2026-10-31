@@ -338,18 +338,27 @@ frames are silently skipped.
 ---
 
 ## inferred_errors.py — Error Reports Written as Data Frames
-*Source last modified: 2026-10-30 18:17:18*
+*Source last modified: 2026-10-31 00:11:18*
 
 Android loggers built before 2026-10-28 wrote each gs_usb error report from an Innomaker adapter as a plain standard frame: the ID is the SocketCAN error-class mask and the 8 bytes follow linux/can/error.h. The same IDs are real message IDs elsewhere (Coda C CAN `0x004` / `0x00C` are cell voltages), so the ID alone cannot tell them apart.
 
-The rule, validated on 3,643 captures and approved 2026-10-30 (reverse-it `tools/artifacts/error-report-sweep/README.md`). A frame is marked only when all three hold:
+The rule, validated on 3,643 captures and approved 2026-10-30 (reverse-it `tools/error-report-sweep/README.md`). A frame is marked only when all three hold:
 
 1. **Capture gate:** the BUSMASTER header names an Innomaker and the file has no `ERR` lines.
 2. **ID gate:** a standard ID in `INFERRED_ERROR_IDS` (`0x004`, `0x00C`, `0x024`), the masks the Innomaker was measured to emit. Add others only from a measurement.
 3. **Payload gate:** `layout_ok(id, data)`, or the payload is all zero and no frame of that ID on that channel in that capture fails `layout_ok`.
 
 - `layout_ok(arb_id, data) -> bool` — 8 bytes; a byte whose class bit is clear is zero; controller code at most `0x40`, location code at most `0x1F`.
-- `inferred_error_marker(path)` — reads the file once and returns a `frame -> bool` function, or `None` when the capture gate fails. `parse_file(..., mark_inferred_errors=True)` uses it.
+**Second rule: desktop BUSMASTER Kvaser id-`0x000` status frames** (step 4c, 2026-10-30; reverse-it `tools/error-report-sweep/README.md`, "Kvaser id-0x000 status frames"). BUSMASTER 3.2.2 with Kvaser adapters writes short standard-id `0x000` frames on any bus, thought to be adapter error-counter and error-state events (a hypothesis). Coda C CAN's real `0x000` is DLC 8 and is never marked. A frame is marked when:
+
+1. **Channel gate:** the header names a Kvaser for the frame's channel (`kvaser_channels(path)`).
+2. **Frame gate:** standard ID `KVASER_STATUS_ID` (`0x000`), DLC 4.
+3. **Payload gate:** `kvaser_status_form(data)` is `"count"` (`00 00 NN 00`) or `"flags"` (`B0 xx 00 00`, B0 `0x00` or `0x20`, xx non-zero).
+
+On 3,643 captures it marks 68,116 frames, none on C CAN, and canbench's marks equal the sweep's on all 209 Kvaser-header captures.
+
+- `inferred_error_marker(path)` — returns a `frame -> bool` function applying whichever rules' gates pass, or `None` when neither does. The Innomaker rule reads the file once first; the Kvaser rule reads only the header. `parse_file(..., mark_inferred_errors=True)` uses it.
+- To build the resolver's input from parsed frames, use `canbench.live.vehicle_configs.observed_ids_per_channel()`, which leaves marked frames out.
 
 Marking never drops a frame; a caller that wants the reports out filters on `frame.inferred_error`.
 

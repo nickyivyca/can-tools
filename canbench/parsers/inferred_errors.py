@@ -7,7 +7,7 @@ Those IDs are also real message IDs (Coda C CAN 0x004 / 0x00C carry cell
 voltages), so the ID alone cannot tell them apart.
 
 The rule, validated on 3,643 captures and approved by the owner 2026-10-30
-(reverse-it tools/artifacts/error-report-sweep/README.md).  A frame is marked
+(reverse-it tools/error-report-sweep/README.md).  A frame is marked
 only when all of these hold; anything else stays data:
 
 1. Capture gate: the BUSMASTER header names an Innomaker adapter and the
@@ -26,7 +26,7 @@ which carry short standard-ID 0x000 frames that look like adapter
 error-counter and error-state events rather than bus traffic (a hypothesis:
 nothing has yet produced them on purpose).  Coda C CAN uses 0x000 for a real
 DLC-8 frame, so the DLC separates them.  Validated on the same 3,643
-captures (reverse-it tools/artifacts/error-report-sweep/kvaser_id0_sweep.py,
+captures (reverse-it tools/error-report-sweep/kvaser_id0_sweep.py,
 plan step 4c): 68,116 frames marked, none on a C CAN channel.  A frame is
 marked only when all of these hold:
 
