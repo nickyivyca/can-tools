@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """CAN log replayer - plays back a captured log file through connected CAN hardware.
 
-Reads any python-can-native log format (candump/SocketCAN ``.log``, Vector
-``.asc``, Vector ``.blf``, CSV) and transmits frames through connected dongles at
-the original timing. The per-line interface field (``can0``, ``can1``, ...) is
-mapped back to a logical log-bus id.
+Reads the format by content (``canbench.replay``): BUSMASTER (including a session's
+``_T`` chunks, chained on their headers) and PEAK TRC through ``canbench.parsers``;
+candump/SocketCAN ``.log``, Vector ``.asc`` / ``.blf``, CSV and SavvyCAN through
+python-can. Frames go out through connected dongles at the original timing.
+
+Choosing a bus: a channel number in a BUSMASTER or TRC capture is dongle insertion
+order, not a bus, so ``--bus 2`` is refused for those formats; pick the bus by
+anchors with ``--vehicle coda --bus d_can``, or add ``--raw-channel`` to replay a
+channel number as it is. candump input keeps ``--bus N`` (can_logger's ``canN``).
+
+Never transmitted, and counted in the summary: non-frame records (BUSMASTER ``ERR``,
+TRC ``ER`` / ``ST`` / ``EC`` / ``EV``), error frames, and frames marked as inferred
+adapter error reports (``canbench/parsers/inferred_errors.py``).
 
 Channel mapping:
   - If the log has the same number of buses as connected dongles, each log bus
-    is sent through the corresponding dongle (log bus 0 -> dongle 0, etc.)
+    is sent through the corresponding dongle in order (numbers, then bus names).
   - Otherwise all frames are sent on the first/only dongle.
 
 Usage:
@@ -16,6 +25,7 @@ Usage:
     python tools/can_replayer.py capture.log --brands ixxat
     python tools/can_replayer.py capture.log --speed 2.0 --loop
     python tools/can_replayer.py capture.log --speed 0   # no delay, as fast as possible
+    python tools/can_replayer.py drive_T0.log --session --vehicle coda --bus d_can
 """
 import argparse
 import can
@@ -28,8 +38,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from canbench import logio
+from canbench import replay
 from canbench.buses import shutdown_bus
+from canbench.live.vehicle_configs import VEHICLES
 from canbench.live.receiver import detect_all_can_interfaces
 
 # Configure logging
@@ -43,7 +54,7 @@ logger = logging.getLogger(__name__)
 can_logger = logging.getLogger('can')
 can_logger.setLevel(logging.WARNING)
 
-# python-can LogReader dispatches these by extension
+# Read by content (BUSMASTER, TRC, SavvyCAN) or by python-can's extension dispatch
 SUPPORTED_SUFFIXES = {'.log', '.asc', '.blf', '.csv', '.trc'}
 
 
@@ -78,7 +89,7 @@ def replay_once(frames, channel_map, speed, abort_event):
 
     Args:
         frames: list of can.Message objects (pre-loaded)
-        channel_map: dict mapping log bus id int -> python-can Bus object
+        channel_map: dict mapping output key (log bus id or bus name) -> python-can Bus
         speed: float replay speed multiplier (0 = no delay)
         abort_event: threading.Event - set to request early stop
 
@@ -103,7 +114,7 @@ def replay_once(frames, channel_map, speed, abort_event):
             if delay > 0:
                 time.sleep(delay)
 
-        output_bus = channel_map[logio.channel_bus_id(frame.channel)]
+        output_bus = channel_map[frame.channel]
         msg = can.Message(
             arbitration_id=frame.arbitration_id,
             data=frame.data,
@@ -120,13 +131,44 @@ def replay_once(frames, channel_map, speed, abort_event):
     return tx_count
 
 
+def skipped_summary(load):
+    """One line: what the log held that is not a frame to transmit."""
+    parts = []
+    if load.events:
+        parts.append("events " + ", ".join(f"{k} {n:,}" for k, n in sorted(load.events.items())))
+    if load.error_frames:
+        parts.append(f"error frames {load.error_frames:,}")
+    if load.inferred_errors:
+        ids = ", ".join(f"0x{i:03X} {n:,}" for i, n in sorted(load.inferred_errors.items()))
+        parts.append(f"inferred adapter errors {sum(load.inferred_errors.values()):,} ({ids})")
+    return "; ".join(parts) or "nothing"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='CAN log replayer - transmit a captured log through connected hardware'
     )
     parser.add_argument(
         'logfile',
-        help='Path to log file (candump/SocketCAN .log, Vector .asc/.blf, CSV; by extension)'
+        nargs='+',
+        help='Log file(s): BUSMASTER, PEAK TRC, candump/SocketCAN .log, Vector .asc/.blf, '
+             'CSV, SavvyCAN (format by content). Several files: BUSMASTER _T chunks of one session'
+    )
+    parser.add_argument(
+        '--session',
+        action='store_true',
+        help='Expand a BUSMASTER _T<n> chunk to every chunk of its session'
+    )
+    parser.add_argument(
+        '--vehicle',
+        choices=sorted(VEHICLES),
+        default=None,
+        help='Name buses by anchor ids (needed for --bus <name>)'
+    )
+    parser.add_argument(
+        '--raw-channel',
+        action='store_true',
+        help='Allow --bus <number> on BUSMASTER/TRC input: replay that channel number as it is'
     )
     parser.add_argument(
         '--bitrate', '-b',
@@ -148,10 +190,10 @@ def main():
     )
     parser.add_argument(
         '--bus',
-        type=int,
         default=None,
-        metavar='BUS_ID',
-        help='Only replay frames from this log bus id (e.g. --bus 1). '
+        metavar='BUS',
+        help='Only replay this bus: a name found by anchors (with --vehicle, e.g. d_can), '
+             'or a channel number (candump; BUSMASTER/TRC need --raw-channel). '
              'Default: replay all buses.'
     )
     parser.add_argument(
@@ -175,40 +217,37 @@ def main():
         logger.setLevel(logging.DEBUG)
         can_logger.setLevel(logging.DEBUG)
 
-    logfile = Path(args.logfile)
-    if not logfile.exists():
-        logger.error(f"Log file not found: {logfile}")
-        sys.exit(1)
+    paths = [Path(p) for p in args.logfile]
+    for p in paths:
+        if p.exists() and p.suffix.lower() not in SUPPORTED_SUFFIXES:
+            logger.error(
+                f"Unsupported log extension '{p.suffix}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
+            )
+            sys.exit(1)
+    if args.session:
+        if len(paths) != 1:
+            logger.error("--session takes one _T chunk")
+            sys.exit(1)
+        paths = replay.session_chunks(paths[0])
 
-    if logfile.suffix.lower() not in SUPPORTED_SUFFIXES:
-        logger.error(
-            f"Unsupported log extension '{logfile.suffix}'. "
-            f"Supported: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
-        )
-        sys.exit(1)
-
-    # --- Load frames via python-can (dispatched by extension) ---
-    logger.info("Loading log file...")
+    logger.info("Loading log file%s..." % ("s" if len(paths) > 1 else ""))
     try:
-        frames = list(logio.read_messages(logfile))
+        load = replay.load_for_replay(paths, vehicle=args.vehicle, bus=args.bus,
+                                      raw_channel=args.raw_channel)
+    except replay.ReplayInputError as e:
+        logger.error(str(e))
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Failed to read log: {e}")
         sys.exit(1)
+    frames = load.messages
     if not frames:
         logger.error("No frames found in log file.")
         sys.exit(1)
-    fmt_name = logfile.suffix.lower().lstrip('.')
+    fmt_name = load.fmt
 
-    # --- Bus filter ---
-    if args.bus is not None:
-        all_buses = sorted(set(logio.channel_bus_id(f.channel) for f in frames))
-        if args.bus not in all_buses:
-            logger.error(f"Bus {args.bus} not found in log. Available buses: {all_buses}")
-            sys.exit(1)
-        frames = [f for f in frames if logio.channel_bus_id(f.channel) == args.bus]
-        logger.info(f"Bus filter: keeping bus {args.bus} ({len(frames):,} frames)")
-
-    log_channels = sorted(set(logio.channel_bus_id(f.channel) for f in frames))
+    log_channels = load.keys
     log_duration = frames[-1].timestamp - frames[0].timestamp
 
     # --- Parse brands filter ---
@@ -243,10 +282,20 @@ def main():
     print("=" * 60)
     print("CAN Log Replayer")
     print("=" * 60)
-    print(f"Log file:     {logfile}  (format: {fmt_name})")
-    if args.bus is not None:
-        print(f"Bus filter:   bus {args.bus} only")
+    if len(load.files) == 1:
+        print(f"Log file:     {load.files[0]}  (format: {fmt_name})")
+    else:
+        print(f"Log files:    {len(load.files)} chunks, {load.files[0].name} .. "
+              f"{load.files[-1].name}  (format: {fmt_name})")
+    print(f"Selection:    {load.selection}")
+    for p, keep in load.kept_channels.items():
+        res = load.resolutions.get(p)
+        if res is not None and (len(load.files) == 1 or args.debug):
+            for ch in sorted(res.hits):
+                print(f"  {p.name} ch{ch}: {res.assignments.get(ch) or res.unresolved.get(ch)}"
+                      f"{'' if ch in keep else '  (not replayed)'}")
     print(f"Frames:       {len(frames):,}")
+    print(f"Not sent:     {skipped_summary(load)}")
     print(f"Log buses:    {len(log_channels)}  (buses {', '.join(str(c) for c in log_channels)})")
     print(f"Log duration: {log_duration:.1f} s")
     print(f"Bitrate:      {args.bitrate:,} bps")
@@ -319,6 +368,7 @@ def main():
     print()
     print("=" * 60)
     print(f"Replay complete: {total_tx:,} frames transmitted ({pass_num} pass{'es' if pass_num > 1 else ''})")
+    print(f"Not sent (per pass): {skipped_summary(load)}")
     print("=" * 60)
 
 

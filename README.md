@@ -13,7 +13,7 @@ separately; nothing in here depends on it.
 | Area | State |
 |------|-------|
 | Hardware layer (`canbench.live`) | Working — ixxat, kvaser, pcan, socketcan, gs_usb |
-| `can_logger` / `can_replayer` (CLI) | Working — candump / SocketCAN default format |
+| `can_logger` / `can_replayer` (CLI) | Working — candump / SocketCAN default format; the replayer reads BUSMASTER (incl. `_T` sessions) and PEAK TRC by content and picks buses by anchors |
 | Passthrough bridge (`can_logger --passthrough`) + virtual/udp test bus | Working |
 | Desktop GUI logger (`can_gui.py`): profiles, dongle select, per-bus frames/sec, candump logging | Phase 2 proto — working, iterating |
 | Windows packaging (PyInstaller onedir zip) | Working — `packaging/build.py`; gs_usb/libusb bundled, verified in the frozen exe |
@@ -32,7 +32,8 @@ BUSMASTER, candump, PEAK TRC 1.x/2.0, Vector ASC and SavvyCAN CSV; see
 `canbench/parsers/parsers.md`) detects a file's format from its first lines, and
 `canbench.logio.read_messages` reads BUSMASTER and SavvyCAN through it, since
 python-can has no reader for either. A BUSMASTER `.log` is therefore no longer
-mistaken for candump. Replayer support for these follows.
+mistaken for candump. The replayer loads through `canbench.replay`, which also
+reads PEAK TRC with its error and status records.
 
 ## Requirements
 
@@ -58,7 +59,18 @@ tools\can_logger_admin.bat --output capture.log
 
 # Replay a capture back onto hardware at original timing
 python tools/can_replayer.py capture.log
+
+# Replay one bus of a BUSMASTER session, every _T chunk, chosen by anchor ids
+python tools/can_replayer.py coda_20261025_193221_T0.log --session --vehicle coda --bus d_can
 ```
+
+A channel number in a BUSMASTER or TRC capture is dongle insertion order, not a
+bus, so `--bus 2` is refused for those formats unless `--raw-channel` is given;
+`--vehicle <v> --bus <name>` finds the bus by anchor ids
+(`canbench/live/vehicle_configs.py`) and refuses when they do not separate.
+The replayer never transmits non-frame records (BUSMASTER `ERR`, TRC
+`ER`/`ST`/`EC`/`EV`), error frames, or frames marked as inferred adapter error
+reports (`canbench/parsers/inferred_errors.py`); it counts each in its summary.
 
 See `tools/README-can_logger.md` for the logger's hardware handling and ixxat
 overflow recovery.
@@ -70,7 +82,8 @@ canbench/
   live/          dongle detection, per-bus RX threads, ixxat USB reset
                  (see live/pcan-busoff-recovery.md for the PCAN bus-off / no-ACK failure mode)
   logio.py       log read/write: content-detected reading, candump writing
-  parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.x/2.0, ASC, SavvyCAN); parsers.md
+  replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent
+  parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.0-2.1, ASC, SavvyCAN); parsers.md
   gui/           PyQt logger GUI                          (Phase 2)
   passthrough.py two-dongle bridge                        (Phase 2)
   profiles.py    vehicle-profile .ini loader              (Phase 2)
