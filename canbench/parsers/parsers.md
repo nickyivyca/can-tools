@@ -42,7 +42,7 @@ dongle insertion order. Identify buses by content.
 Every `parse_file` yields frames; none returns a list. A second pass over the same result sees **nothing**, with no error. The usual trap is a bus-identification pass followed by an analysis pass: the second one comes back empty and reads as "the ID is absent". If you need more than one pass, materialise it first: `frames = list(parse_file(path))`. Found 2026-10-26, when an HVAC scratchpad reported every ID, its bus anchors included, as missing from all 20 captures.
 
 ## base.py — Core Data Types
-*Source last modified: 2026-10-30 18:15:46*
+*Source last modified: 2026-10-31 15:33:37*
 
 ### `CANFrame` dataclass
 
@@ -103,10 +103,21 @@ A log line that is not a CAN frame, **reported as written**: `kind` is the log's
 | `ERR` | BUSMASTER | SocketCAN error frame (linux/can/error.h); class mask in `arbitration_id` |
 | `ER` | TRC 2.x | 5 bytes: error type (1 bit, 2 form, 4 stuff, 8 other), direction (0 tx, 1 rx), bit position, RX counter, TX counter |
 | `ST` | TRC 2.x | 4-byte hardware status, MSB first: `0x02` OVERRUN, `0x08` BUSWARNING, `0x40000` BUSPASSIVE, `0x10` BUSOFF |
-| `EC` | TRC 2.x | 2 bytes: RX, TX error counter, written when a counter decreases |
+| `EC` | TRC 2.x | 2 bytes: RX, TX error counter, written when a counter decreases (spec); PCAN-Basic 5.0 writes 4, see below |
 | `EV` | TRC 2.1+ | none; user text in `text` |
 | `Error` | TRC 1.x | 4 bytes: direction, bit position, RX, TX counter; error type in `arbitration_id` |
 | `Warng` | TRC 1.x | 4-byte error-warning code, MSB first |
+
+**PCAN-Basic 5.0 writes `EC` in 4 bytes** (measured 2026-10-31 on 5.0.0.1115, reverse-it
+`tools/notes/peak_trc_error_records.md`): `direction, bit position, RX, TX`, the body of its API's
+error-frame message with ID 0 ("only updated error counter values", PCAN-Basic docs, "Error
+Frames"), where PEAK's trace spec has 2 bytes `RX, TX`. In TRC 1.1 it writes the same counter
+change as an `Error` line with type `0000`, which the spec does not list. The bench traces'
+counter movement matches bytes 2/3 = RX/TX. To read counters, take bytes 0/1 of a 2-byte `EC`
+and bytes 2/3 of a 4-byte one. PEAK-Converter 3.2 keeps only the first 2 bytes of a 4-byte `EC`,
+so a 2.1 or 1.1 file it converts from PCAN-Basic's 2.0 holds direction and position there, not
+counters; nothing in the file shows this. This reader reports the bytes as written and decodes
+no counters. A writer should follow the spec (2 bytes).
 
 ---
 
@@ -272,7 +283,7 @@ Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True`
 
 Unix time of `;$STARTTIME` (days since 1899-12-30). The header is the recorder's local time and is treated as UTC, as `canbench.logio.busmaster_start` does, so deltas are exact.
 
-**PCAN-Basic 5.0 writes a wrong `$STARTTIME`** (measured 2026-10-31, reverse-it `tools/plans/can-replay-readers.md` step 6c): the TRC 1.1 traces written by PCAN-Basic 5.0.0.1115's trace feature on Windows, on a machine at UTC-7, carry `$STARTTIME` = local time minus 7 h (UTC minus 14 h), in whole seconds, while the same file's `Start time:` comment line has the right local time to the millisecond. PEAK's spec makes the two the same instant. This reader follows the spec and does not cross-check the comment, so `start_time()` and `absolute=True` are 14 h off for such files; relative times are unaffected. Take the start from the `Start time:` line by hand if one of these traces needs absolute time.
+**PCAN-Basic 5.0 writes a wrong `$STARTTIME`** (measured 2026-10-31, reverse-it `tools/plans/can-replay-readers.md` step 6c): the TRC 1.1 traces written by PCAN-Basic 5.0.0.1115's trace feature on Windows, on a machine at UTC-7, carry `$STARTTIME` = local time minus 7 h (UTC minus 14 h), in whole seconds, while the same file's `Start time:` comment line has the right local time to the millisecond. PEAK's spec makes the two the same instant. This reader follows the spec and does not cross-check the comment, so `start_time()` and `absolute=True` are 14 h off for such files; relative times are unaffected. Take the start from the `Start time:` line by hand if one of these traces needs absolute time. The FD-channel TRC 2.0 traces from the same version are off the same way. PCAN-Basic 5.0.1 (2026-03-31) lists the fix "The conversion of the STARTTIME value in generated PCAN trace files did not take time zones into account"; that is likely this bug, unconfirmed until a 5.0.1 trace is read.
 
 ---
 

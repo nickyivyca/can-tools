@@ -56,11 +56,14 @@ class CANEvent:
     ER       TRC 2.x           5 bytes: type, direction, bit position, RX, TX counter
     ST       TRC 2.x           4-byte hardware status, MSB first (0x02 OVERRUN,
                                0x08 BUSWARNING, 0x40000 BUSPASSIVE, 0x10 BUSOFF)
-    EC       TRC 2.x           2 bytes: RX, TX error counter (after a decrease)
+    EC       TRC 2.x           2 bytes: RX, TX error counter (after a decrease),
+                               per the spec; PCAN-Basic 5.0 writes 4: direction,
+                               bit position, RX, TX (see parsers.md)
     EV       TRC 2.1+          none; the user text is in *text*
     Error    TRC 1.x           4 bytes: direction, bit position, RX, TX counter;
                                the error type (1 bit, 2 form, 4 stuff, 8 other)
-                               in arbitration_id
+                               in arbitration_id; PCAN-Basic writes type 0 for a
+                               counter change
     Warng    TRC 1.x           4-byte error-warning code, MSB first
     """
     timestamp: float          # same time base as the file's frames
