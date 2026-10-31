@@ -16,13 +16,17 @@ Coda's sets are the ones audited exclusive in reverse-it (`projects/coda/README.
 against its own results). The audits are the evidence; this table is the one copy code
 reads.
 
+Build the observed ids with ``observed_ids_per_channel`` from frames parsed with
+``mark_inferred_errors=True``: an adapter error report written as a data frame carries an
+anchor's id (Coda C CAN 0x000, 0x004) and would put a C CAN anchor on another bus.
+
 Usage:
     from canbench.live.vehicle_configs import VEHICLES, detect_bus_assignments
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Set
+from typing import Dict, FrozenSet, Iterable, List, Set
 
 DETECTION_WINDOW_S = 5.0
 
@@ -121,6 +125,22 @@ class BusResolution:
     def channels_for(self, bus_name: str) -> List[int]:
         """Channels named ``bus_name`` (more than one when a logger renumbered a bus)."""
         return sorted(ch for ch, b in self.assignments.items() if b == bus_name)
+
+
+def observed_ids_per_channel(frames: Iterable) -> Dict[int, Set[int]]:
+    """{channel: ids seen} from ``canbench.parsers`` records, for ``resolve_buses``.
+
+    Leaves out error frames and frames marked ``inferred_error`` (parse with
+    ``mark_inferred_errors=True``), so an adapter's error report cannot act as an anchor.
+    Non-frame records (``CANEvent``) are skipped.
+    """
+    from canbench.parsers.base import CANFrame
+    out: Dict[int, Set[int]] = {}
+    for f in frames:
+        if not isinstance(f, CANFrame) or f.is_error or f.inferred_error:
+            continue
+        out.setdefault(f.bus, set()).add(f.arbitration_id)
+    return out
 
 
 def resolve_buses(

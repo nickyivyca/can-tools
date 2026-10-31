@@ -100,7 +100,7 @@ def parse_file(path: Path | str, *, absolute: bool = False,
     mark_inferred_errors : bool
         If True, set ``CANFrame.inferred_error`` on data frames that the rule
         in ``inferred_errors.py`` identifies as adapter error reports written
-        as ordinary frames.  Reads the file twice.  Never drops a frame.
+        as ordinary frames.  May read the file twice.  Never drops a frame.
 
     Yields
     ------

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import can
 from canbench.parsers import CANEvent, CANFrame, parse_file
 from canbench.parsers.peak_trc import PeakTrcParser, start_time
-from canbench.parsers.inferred_errors import layout_ok
+from canbench.parsers.inferred_errors import kvaser_status_form, layout_ok
 
 # 45000.25 days after 1899-12-30 = 2023-03-15 06:00:00 (header local time)
 START = ";$STARTTIME=45000.25"
@@ -284,6 +284,52 @@ def test_inferred_marking_is_opt_in_and_drops_nothing():
     marked = list(parse_file(p, mark_inferred_errors=True))
     assert not any(f.inferred_error for f in plain)
     assert [(f.arbitration_id, f.data) for f in plain] == [(f.arbitration_id, f.data) for f in marked]
+
+
+# Channel 1 is a Kvaser, channel 2 an Innomaker.  Short id-0x000 frames in
+# both status forms, then the frames the Kvaser rule must leave as data: a
+# 4-byte payload in neither form, a DLC-8 0x000 (a Coda C CAN cell frame),
+# an extended 0, another id, and a status-form frame on the Innomaker.
+BM_KVASER_BODY = """00:00:00:0000 Rx 1 0x000 s 4 00 00 0E 00
+00:00:00:0100 Rx 1 0x000 s 4 00 00 00 00
+00:00:00:0200 Rx 1 0x000 s 4 00 48 00 00
+00:00:00:0300 Rx 1 0x000 s 4 20 64 00 00
+00:00:00:0400 Rx 1 0x000 s 4 01 02 03 04
+00:00:00:0500 Rx 1 0x000 s 8 0F A0 0F A1 0F A2 0F A3
+00:00:00:0600 Rx 1 0x00000000 x 4 00 00 0E 00
+00:00:00:0700 Rx 1 0x001 s 4 00 00 0E 00
+00:00:00:0800 Rx 2 0x000 s 4 00 00 0E 00
+00:00:00:0900 Rx 2 0x024 s 8 00 20 00 00 00 00 80 00
+"""
+
+
+def test_kvaser_status_marking_follows_the_rule():
+    got = _marked(BM_HEAD.format(a1="Kvaser", a2="Innomaker") + BM_KVASER_BODY)
+    assert got == [
+        (1, 0x000, True),    # count form
+        (1, 0x000, True),    # count form at zero
+        (1, 0x000, True),    # flags form
+        (1, 0x000, True),    # flags form, 0x20 first byte
+        (1, 0x000, False),   # neither form
+        (1, 0x000, False),   # DLC 8
+        (1, 0x000, False),   # extended
+        (1, 0x001, False),   # not id 0
+        (2, 0x000, False),   # the channel is not a Kvaser
+        (2, 0x024, True),    # the Innomaker rule still applies on channel 2
+    ]
+
+
+def test_kvaser_status_marking_needs_a_kvaser_channel():
+    got = _marked(BM_HEAD.format(a1="Innomaker", a2="Innomaker") + BM_KVASER_BODY)
+    assert [m for b, i, m in got if i == 0x000] == [False] * 8
+
+
+def test_kvaser_status_form_examples():
+    assert kvaser_status_form(bytes.fromhex("00000E00")) == "count"
+    assert kvaser_status_form(bytes.fromhex("20460000")) == "flags"
+    assert kvaser_status_form(bytes.fromhex("10460000")) is None
+    assert kvaser_status_form(bytes.fromhex("00460100")) is None
+    assert kvaser_status_form(bytes.fromhex("00000E0000000000")) is None
 
 
 def test_layout_ok_examples():

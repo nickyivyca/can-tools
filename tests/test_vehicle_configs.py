@@ -6,14 +6,16 @@ Run standalone:   python tests/test_vehicle_configs.py
 Or under pytest:  python -m pytest tests/test_vehicle_configs.py
 """
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canbench.live.vehicle_configs import (
     VEHICLES, BusAssignmentError, BusConfig, VehicleConfig, detect_bus_assignments,
-    resolve_buses,
+    observed_ids_per_channel, resolve_buses,
 )
+from canbench.parsers import parse_file
 
 CODA = VEHICLES["coda"]
 CELLS = set(range(0x000, 0x01A)) - {0x004, 0x00C}
@@ -119,6 +121,28 @@ def test_per_bus_min_anchors():
                               "b": BusConfig(frozenset({2, 3}))})
     assert detect_bus_assignments(cfg, {1: {1}, 2: {2}}) == {1: "a"}
     assert "a=1, b=2" in _raises(detect_bus_assignments, cfg, {1: {1, 2, 3}})
+
+
+def test_observed_ids_leave_out_marked_status_frames():
+    # A Kvaser B CAN channel with a short id-0x000 status frame: unmarked, 0x000 is a C CAN
+    # anchor and the channel is ambiguous; parsed with marking, it is B CAN.
+    log = ("***BUSMASTER Ver 3.2.2***\n***PROTOCOL CAN***\n***[START LOGGING SESSION]***\n"
+           "***START DATE AND TIME 02:01:2026 03:04:05:678***\n***HEX***\n"
+           "***START CHANNEL BAUD RATE***\n***CHANNEL 1 - Kvaser - 500000 bps***\n"
+           "***END CHANNEL BAUD RATE***\n***<Time><Tx/Rx><Channel><CAN ID><Type><DLC><DataBytes>***\n"
+           "00:00:00:0000 Rx 1 0x48A s 2 01 02\n"
+           "00:00:00:0100 Rx 1 0x000 s 4 00 48 00 00\n"
+           "00:00:00:0200 Rx 1 0x381 s 2 03 04\n"
+           "00:00:00:0300 Rx 1 0x7DF ERR 8 00 00 00 00 00 00 00 00\n")
+    p = Path(tempfile.mkdtemp(prefix="canbench-vc-")) / "b.log"
+    p.write_text(log, encoding="utf-8")
+    plain = observed_ids_per_channel(parse_file(p, include_events=True))
+    assert plain == {1: {0x48A, 0x000, 0x381}}
+    _raises(detect_bus_assignments, CODA, plain)
+    marked = observed_ids_per_channel(parse_file(p, mark_inferred_errors=True,
+                                                 include_errors=True))
+    assert marked == {1: B_KEYON}
+    assert detect_bus_assignments(CODA, marked) == {1: "b_can"}
 
 
 if __name__ == "__main__":

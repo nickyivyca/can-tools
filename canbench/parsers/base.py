@@ -23,7 +23,8 @@ class CANFrame:
     is_error: bool = False
     # True for a data frame that is, by the rule in inferred_errors.py, an
     # adapter error report written as an ordinary frame (Android logs from
-    # before ERR lines existed).  Set only by parse_file(...,
+    # before ERR lines existed; desktop BUSMASTER Kvaser id-0x000 status
+    # frames).  Set only by parse_file(...,
     # mark_inferred_errors=True); never set on a frame the log wrote as an error.
     inferred_error: bool = False
 

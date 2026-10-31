@@ -20,6 +20,23 @@ only when all of these hold; anything else stays data:
 
 The marks are a property of the whole capture, so marking takes a first pass
 over the file before frames are yielded.
+
+A second rule covers desktop BUSMASTER 3.2.2 captures from Kvaser adapters,
+which carry short standard-ID 0x000 frames that look like adapter
+error-counter and error-state events rather than bus traffic (a hypothesis:
+nothing has yet produced them on purpose).  Coda C CAN uses 0x000 for a real
+DLC-8 frame, so the DLC separates them.  Validated on the same 3,643
+captures (reverse-it tools/artifacts/error-report-sweep/kvaser_id0_sweep.py,
+plan step 4c): 68,116 frames marked, none on a C CAN channel.  A frame is
+marked only when all of these hold:
+
+1. Channel gate: the BUSMASTER header names a Kvaser adapter for the
+   frame's channel.
+2. Frame gate: standard ID 0x000, DLC 4.
+3. Payload gate: the "count" form ``00 00 NN 00`` or the "flags" form
+   ``B0 xx 00 00`` with B0 0x00 or 0x20 and xx non-zero (kvaser_status_form).
+
+This rule needs no first pass beyond the header.
 """
 from __future__ import annotations
 
@@ -28,6 +45,7 @@ from pathlib import Path
 from .busmaster import BusmasterParser, channel_adapters
 
 INFERRED_ERROR_IDS = frozenset({0x004, 0x00C, 0x024})
+KVASER_STATUS_ID = 0x000
 
 
 def layout_ok(arb_id: int, data: bytes) -> bool:
@@ -58,18 +76,60 @@ def _outcome(arb_id: int, data: bytes) -> str:
     return "pass" if layout_ok(arb_id, data) else "fail"
 
 
+def kvaser_status_form(data: bytes) -> str | None:
+    """'count' or 'flags' if a 4-byte payload has one of the Kvaser status
+    forms, else None."""
+    if len(data) != 4:
+        return None
+    b0, b1, b2, b3 = data
+    if b0 == 0 and b1 == 0 and b3 == 0:
+        return "count"
+    if b0 in (0x00, 0x20) and b1 != 0 and b2 == 0 and b3 == 0:
+        return "flags"
+    return None
+
+
 def capture_gate(path: Path | str) -> bool:
     """Rule 1 without the ERR-line half: the header names an Innomaker."""
     return any("innomaker" in name.lower() for name in channel_adapters(path).values())
 
 
-def inferred_error_marker(path: Path | str):
-    """A function frame -> bool for the frames of *path* that the rule marks,
-    or None if the capture gate fails (then no frame is marked).
+def kvaser_channels(path: Path | str) -> frozenset[int]:
+    """Channels whose header line names a Kvaser adapter."""
+    return frozenset(ch for ch, name in channel_adapters(path).items()
+                     if "kvaser" in name.lower())
 
-    Reads the whole file once.  Only BUSMASTER captures can pass the gate:
-    no other format here names the adapter.
+
+def _kvaser_marker(path: Path | str):
+    channels = kvaser_channels(path)
+    if not channels:
+        return None
+
+    def marked(frame) -> bool:
+        return (frame.bus in channels and not frame.is_extended
+                and frame.arbitration_id == KVASER_STATUS_ID and frame.dlc == 4
+                and kvaser_status_form(frame.data) is not None)
+
+    return marked
+
+
+def inferred_error_marker(path: Path | str):
+    """A function frame -> bool for the frames of *path* that either rule
+    marks, or None if neither rule's gate passes (then no frame is marked).
+
+    Only BUSMASTER captures can pass a gate: no other format here names the
+    adapter.
     """
+    rules = [m for m in (_innomaker_marker(path), _kvaser_marker(path)) if m]
+    if not rules:
+        return None
+    if len(rules) == 1:
+        return rules[0]
+    return lambda frame: any(m(frame) for m in rules)
+
+
+def _innomaker_marker(path: Path | str):
+    """The Innomaker rule.  Reads the whole file once."""
     if not capture_gate(path):
         return None
     failing: set[tuple[int, int]] = set()
