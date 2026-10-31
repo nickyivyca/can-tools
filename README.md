@@ -27,6 +27,13 @@ greppable, with absolute epoch timestamps and a per-line interface field that
 preserves multi-bus identity (`can0`, `can1`, ...). Vector `.asc` / `.blf` and
 CSV are also supported for read/replay (dispatched by file extension).
 
+**Reading is by content first.** `canbench.parsers` (stdlib-only readers for
+BUSMASTER, candump, PEAK TRC 1.x/2.0, Vector ASC and SavvyCAN CSV; see
+`canbench/parsers/parsers.md`) detects a file's format from its first lines, and
+`canbench.logio.read_messages` reads BUSMASTER and SavvyCAN through it, since
+python-can has no reader for either. A BUSMASTER `.log` is therefore no longer
+mistaken for candump. Replayer support for these follows.
+
 ## Requirements
 
 ```
@@ -62,7 +69,8 @@ overflow recovery.
 canbench/
   live/          dongle detection, per-bus RX threads, ixxat USB reset
                  (see live/pcan-busoff-recovery.md for the PCAN bus-off / no-ACK failure mode)
-  logio.py       python-can candump read/write wrappers
+  logio.py       log read/write: content-detected reading, candump writing
+  parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.x/2.0, ASC, SavvyCAN); parsers.md
   gui/           PyQt logger GUI                          (Phase 2)
   passthrough.py two-dongle bridge                        (Phase 2)
   profiles.py    vehicle-profile .ini loader              (Phase 2)
