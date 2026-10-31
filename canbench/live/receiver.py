@@ -5,6 +5,7 @@ the hardware plumbing.
 
 Public API:
     detect_all_can_interfaces(bitrate, brands=None) -> list of (iface, ch_spec, desc)
+    socketcan_interfaces() -> list of (name, driver, is_up), Linux only
     CANBusLogger(bus_id, bus, message_queue, iface, ch, bitrate)
 """
 
@@ -240,7 +241,47 @@ class CANBusLogger:
         logger.info(f"Bus {self.bus_id} logging stopped")
 
 
-def detect_all_can_interfaces(bitrate, brands=None):
+# Linux SocketCAN driver -> the brand name --brands uses for the same adapter elsewhere
+_SOCKETCAN_DRIVER_BRAND = {
+    'gs_usb': 'gs_usb',          # Innomaker USB2CAN / candleLight
+    'ix_usb_can': 'ixxat',       # HMS out-of-tree IXXAT driver
+    'kvaser_usb': 'kvaser',
+    'peak_usb': 'pcan',
+}
+_ARPHRD_CAN = '280'
+_IFF_UP = 0x1
+
+
+def socketcan_interfaces(root='/sys/class/net'):
+    """SocketCAN interfaces on this host as (name, driver, is_up), by content.
+
+    Read from ``/sys/class/net``: every interface of link type CAN, with the
+    kernel driver behind it (``None`` for vcan) and whether it is up. ``canN``
+    names follow plug order, so an adapter is identified by its driver, never
+    by its name. Empty where there is no ``/sys/class/net`` (not Linux).
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for name in names:
+        d = os.path.join(root, name)
+        try:
+            with open(os.path.join(d, 'type')) as fh:
+                if fh.read().strip() != _ARPHRD_CAN:
+                    continue
+            with open(os.path.join(d, 'flags')) as fh:
+                is_up = bool(int(fh.read().strip(), 16) & _IFF_UP)
+        except (OSError, ValueError):
+            continue
+        drv = os.path.join(d, 'device', 'driver')
+        driver = os.path.basename(os.readlink(drv)) if os.path.islink(drv) else None
+        out.append((name, driver, is_up))
+    return out
+
+
+def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
     """Detect all available CAN interfaces.
 
     Args:
@@ -255,6 +296,7 @@ def detect_all_can_interfaces(bitrate, brands=None):
         - dict for ixxat with {'channel': 0, 'unique_hardware_id': 'HW123456'}
     """
     interfaces = []
+    sockcan = socketcan_interfaces(_sysfs)
 
     # Detect ixxat devices using hardware IDs
     if brands is None or 'ixxat' in brands:
@@ -278,7 +320,11 @@ def detect_all_can_interfaces(bitrate, brands=None):
     # Detect gs_usb devices (Innomaker USB2CAN / candleLight firmware).
     # These enumerate as VID 0x1D50 / PID 0x606F with WinUSB auto-bound.
     if brands is None or 'gs_usb' in brands or (brands and 'innomaker' in brands):
-        if _ensure_gs_usb_libusb():
+        if any(drv == 'gs_usb' for _, drv, _ in sockcan):
+            # The kernel driver holds it: it is a SocketCAN interface (below), and
+            # opening it through libusb would take it from the kernel.
+            logger.debug("gs_usb: bound to the Linux gs_usb driver; using SocketCAN, not libusb")
+        elif _ensure_gs_usb_libusb():
             try:
                 from gs_usb.gs_usb import GsUsb
                 devs = GsUsb.scan()
@@ -326,15 +372,26 @@ def detect_all_can_interfaces(bitrate, brands=None):
             except Exception as e:
                 logger.debug(f"pcan {ch}: {e}")
 
-    # Try socketcan
-    if brands is None or 'socketcan' in brands:
-        for ch in ['can0', 'can1', 'can2', 'can3']:
-            try:
-                bus = can.interface.Bus(interface='socketcan', channel=ch, bitrate=bitrate)
-                bus.shutdown()
-                interfaces.append(('socketcan', ch, f'socketcan {ch}'))
-                logger.info(f"Detected socketcan {ch}")
-            except Exception as e:
-                logger.debug(f"socketcan {ch}: {e}")
+    # SocketCAN (Linux): every CAN interface, picked by its driver. 'socketcan'
+    # selects all of them; a brand ('ixxat', 'gs_usb'/'innomaker', 'kvaser',
+    # 'pcan') selects the interfaces whose driver is that brand's. The bit rate
+    # belongs to the interface (ip link), so an interface that is down is skipped.
+    for ch, driver, is_up in sockcan:
+        brand = _SOCKETCAN_DRIVER_BRAND.get(driver)
+        wanted = (brands is None or 'socketcan' in brands or (brand is not None and brand in brands)
+                  or (brand == 'gs_usb' and 'innomaker' in brands))
+        if not wanted:
+            continue
+        if not is_up:
+            logger.info(f"socketcan {ch} ({driver or 'virtual'}) is down; skipped")
+            continue
+        try:
+            bus = can.interface.Bus(interface='socketcan', channel=ch, bitrate=bitrate)
+            bus.shutdown()
+            desc = f'socketcan {ch} ({driver or "virtual"})'
+            interfaces.append(('socketcan', ch, desc))
+            logger.info(f"Detected {desc}")
+        except Exception as e:
+            logger.debug(f"socketcan {ch}: {e}")
 
     return interfaces
