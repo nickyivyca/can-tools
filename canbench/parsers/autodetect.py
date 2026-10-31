@@ -91,10 +91,11 @@ def parse_file(path: Path | str, *, absolute: bool = False,
         instead of relative to first frame. Useful for chaining T-chunk files.
     include_errors : bool
         If True, also yield error frames (``CANFrame.is_error``). Only the
-        BUSMASTER parser has them (``ERR`` lines); other formats ignore this.
+        BUSMASTER (``ERR`` lines) and candump (CAN_ERR_FLAG ids) parsers have
+        them; other formats ignore this.
     include_events : bool
         If True, also yield the log's non-frame lines as ``CANEvent`` records,
-        in file order: BUSMASTER ``ERR``; TRC ``ER``, ``ST``, ``EC``, ``EV``
+        in file order: BUSMASTER and candump ``ERR``; TRC ``ER``, ``ST``, ``EC``, ``EV``
         (1.x ``Error``, ``Warng``).  Takes precedence over *include_errors*
         for an ``ERR`` line.  Formats without such lines ignore this.
     mark_inferred_errors : bool
@@ -108,7 +109,7 @@ def parse_file(path: Path | str, *, absolute: bool = False,
         Frames (and events, if asked for) in file order.
     """
     parser = detect_format(path)
-    if isinstance(parser, BusmasterParser):
+    if isinstance(parser, (BusmasterParser, CandumpParser)):
         records = parser.parse_file(path, absolute=absolute, include_errors=include_errors,
                                     include_events=include_events)
     elif isinstance(parser, PeakTrcParser):

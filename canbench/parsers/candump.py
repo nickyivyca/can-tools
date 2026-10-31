@@ -7,18 +7,32 @@ candump format:
 Key details:
     - Timestamp in parentheses is Unix epoch seconds with microsecond precision
     - Interface name (e.g. can0, vcan1) maps to bus number
-    - ID is hex; extended if > 0x7FF (or if preceded by an extended flag)
+    - ID is hex, 3 digits for an 11-bit ID and 8 for a 29-bit one (can-utils
+      lib.c), so the width says which: 8 digits is extended even when the value
+      is small. A value above 0x7FF is extended whatever the width.
     - '#' separates ID from data payload
     - Data is a contiguous hex string (pairs of hex chars, no spaces)
-    - Some variants use '##' for FD frames with flags byte
+    - '##<flags>' marks a CAN FD frame: one hex digit of flags, then the data
+    - '#R' (optionally '#R<len>') is a remote request: not a data frame, so it
+      is skipped and counted in ``self.skipped['remote']``
+    - An ID with CAN_ERR_FLAG (0x20000000) set is a SocketCAN error frame
+      (python-can writes ``20000080#...``). It is skipped unless asked for:
+      ``include_events=True`` yields a CANEvent ``ERR``, ``include_errors=True``
+      a CANFrame with ``is_error`` set, both with the error-class mask
+      (ID & 0x1FFFFFFF) in ``arbitration_id`` and the 8 data bytes as written --
+      the same layout as a BUSMASTER ``ERR`` line.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from collections import Counter
 from typing import Iterator
 
-from .base import BaseParser, CANFrame
+from .base import BaseParser, CANEvent, CANFrame
+
+CAN_ERR_FLAG = 0x20000000
+CAN_EFF_MASK = 0x1FFFFFFF
 
 # Main data line pattern
 # Groups: (timestamp) interface ID#DATA
@@ -27,7 +41,8 @@ _LINE_RE = re.compile(
     r"(\S+)\s+"                      # interface (can0, vcan1, etc.)
     r"([0-9A-Fa-f]+)"               # arbitration ID (hex)
     r"#"                              # separator
-    r"#?([0-9A-Fa-f]*)"             # data hex string (## = FD flag byte prefix)
+    r"(#[0-9A-Fa-f]|R\d*)?"          # '##<flags>' (CAN FD) or 'R[len]' (remote)
+    r"([0-9A-Fa-f]*)"               # data hex string
 )
 
 # Extract bus number from interface name like "can0", "vcan1"
@@ -51,6 +66,9 @@ def _hex_string_to_bytes(hex_str: str) -> bytes:
 class CandumpParser(BaseParser):
     """Parser for candump / SocketCAN log files."""
 
+    def __init__(self) -> None:
+        self.skipped: Counter = Counter()
+
     @staticmethod
     def detect(lines: list[str]) -> bool:
         """Return True if sample lines look like candump output.
@@ -66,14 +84,22 @@ class CandumpParser(BaseParser):
                 matches += 1
         return matches >= 2
 
-    def parse_file(self, path: Path | str, *, absolute: bool = False) -> Iterator[CANFrame]:
+    def parse_file(self, path: Path | str, *, absolute: bool = False,
+                   include_errors: bool = False,
+                   include_events: bool = False) -> Iterator[CANFrame | CANEvent]:
         """Parse a candump log file, yielding CANFrame objects.
 
-        The first frame's timestamp becomes t=0. All subsequent timestamps
+        The first line's timestamp becomes t=0. All subsequent timestamps
         are relative to that origin.
+
+        Error frames are skipped unless *include_events* (a CANEvent ``ERR``)
+        or *include_errors* (a CANFrame with ``is_error``) asks for them;
+        *include_events* takes precedence. Remote requests are skipped and
+        counted in ``self.skipped``.
         """
         path = Path(path)
         t_origin: float | None = None
+        self.skipped = Counter()
 
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for raw_line in fh:
@@ -85,7 +111,7 @@ class CandumpParser(BaseParser):
                 if not m:
                     continue
 
-                ts_str, iface, id_str, data_hex = m.groups()
+                ts_str, iface, id_str, marker, data_hex = m.groups()
 
                 abs_time = float(ts_str)
                 if t_origin is None:
@@ -94,9 +120,21 @@ class CandumpParser(BaseParser):
 
                 bus = _interface_to_bus(iface)
                 arb_id = int(id_str, 16)
-                is_extended = arb_id > 0x7FF
                 data = _hex_string_to_bytes(data_hex)
                 dlc = len(data)
+
+                if arb_id & CAN_ERR_FLAG:
+                    mask = arb_id & CAN_EFF_MASK
+                    if include_events:
+                        yield CANEvent(rel_time, bus, "ERR", data, False, mask)
+                    elif include_errors:
+                        yield CANFrame(timestamp=rel_time, arbitration_id=mask, data=data,
+                                       bus=bus, is_extended=False, dlc=dlc, is_error=True)
+                    continue
+                if marker and marker[0] in "Rr":
+                    self.skipped["remote"] += 1
+                    continue
+                is_extended = len(id_str) > 3 or arb_id > 0x7FF
 
                 yield CANFrame(
                     timestamp=rel_time,

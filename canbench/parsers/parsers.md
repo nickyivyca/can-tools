@@ -203,7 +203,7 @@ Adapter name per channel from the header, e.g. `{1: "Innomaker"}` for the Androi
 ---
 
 ## candump.py — candump / SocketCAN Parser
-*Source last modified: 2026-02-16 00:41:49*
+*Source last modified: 2026-10-31 01:04:11*
 
 Parser for `candump` (SocketCAN) log format. Each line has the form `(epoch.usec) canX ID#DATA`.
 
@@ -215,22 +215,26 @@ Inherits from `BaseParser`.
 
 Returns `True` if at least 2 non-comment lines match the candump pattern `(timestamp) interface ID#data`.
 
-#### `parse_file(path, *, absolute: bool = False) -> Iterator[CANFrame]`
+#### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False) -> Iterator[CANFrame | CANEvent]`
 
-**Timestamp handling:** Unix epoch seconds with microsecond precision, made relative to the first frame. The `absolute` parameter is accepted but **not currently implemented** — timestamps are always relative.
+**Timestamp handling:** Unix epoch seconds with microsecond precision, made relative to the first line. The `absolute` parameter is accepted but **not currently implemented** — timestamps are always relative.
 
 **Bus number:** Extracted from trailing digits of the interface name (e.g. `can0` → bus 0, `vcan1` → bus 1). Defaults to bus 0.
 
-**Extended ID:** Inferred from value (ID > `0x7FF`). No explicit flag in candump format.
+**Extended ID:** from the ID's width: can-utils writes 3 digits for an 11-bit ID and 8 for a 29-bit one, so more than 3 digits is extended even when the value is small; a value above `0x7FF` is extended whatever the width. (Before 2026-10-31 it was inferred from the value alone, so `0000007F#` read back as standard.)
 
-**Data payload:** Contiguous hex after `#` (no spaces). `##` indicates CAN FD with a flags byte prefix.
+**Data payload:** Contiguous hex after `#` (no spaces). `##<flags>` is a CAN FD frame: one hex digit of flags, then the data. (Before 2026-10-31 the flags digit was read as data.)
+
+**Error frames:** an ID with `CAN_ERR_FLAG` (`0x20000000`) set is a SocketCAN error frame, e.g. python-can's `20000080#0000000000000000`. Skipped by default. `include_events=True` yields a `CANEvent` `ERR`, `include_errors=True` a `CANFrame` with `is_error` set; both carry the error-class mask (ID & `0x1FFFFFFF`) in `arbitration_id` and the 8 bytes as written, the same layout as a BUSMASTER `ERR`. (Before 2026-10-31 an error line was yielded as a data frame with ID `0x20000080`.)
+
+**Remote requests:** `#R` or `#R<len>` is skipped and counted in the parser's `skipped` Counter (key `remote`), like TRC's `RR`. (Before 2026-10-31 it was yielded as a 0-byte data frame.)
 
 **Caveat:** `is_tx` is always `False` — candump does not distinguish Tx from Rx.
 
 ---
 
 ## peak_trc.py — PEAK PCAN TRC Parser
-*Source last modified: 2026-10-30 18:16:43*
+*Source last modified: 2026-10-31 01:04:19*
 
 Parser for PEAK PCAN Trace (`.trc`) log files, versions 1.0 to 2.1, written against PEAK-System's "PEAK CAN TRC File Format" (edition 2025-08-04). Version 3.0 files are read for their CAN and CAN FD lines. The version comes from `;$FILEVERSION=`; a file without it is 1.0.
 
@@ -258,7 +262,7 @@ Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True`
 
 **Non-frame lines:** `ER`, `ST`, `EC`, `EV` (1.x `Error`, `Warng`) become `CANEvent` records, yielded only with `include_events=True`. In 2.0 the ID and length columns of `ER` / `ST` / `EC` lines are empty; from 2.1 they hold `-` and a length.
 
-**Extended ID:** 8 ID digits, or a value above `0x7FF`.
+**Extended ID:** more than 4 ID digits, or a value above `0x7FF`. PEAK writes 4 digits for an 11-bit ID (3 in 3.0) and 8 for a 29-bit one; python-can 4.6.1's `TRCWriter` writes 7 for a 29-bit ID, which the earlier 8-digit rule read back as standard (found 2026-10-31).
 
 **Bus number:** from the Bus column (1.2, 1.3, 2.1 `B`); bus 1 when the file has none. An `EV` written for all buses (`-`) has `bus=None`.
 
@@ -365,7 +369,7 @@ Marking never drops a frame; a caller that wants the reports out filters on `fra
 ---
 
 ## autodetect.py — Format Auto-Detection & Convenience Entry Point
-*Source last modified: 2026-10-30 18:17:43*
+*Source last modified: 2026-10-31 01:04:19*
 
 Automatic format detection and the primary public entry point for all log parsing.
 

@@ -84,8 +84,10 @@ def _hex_bytes(tokens: list[str], limit: int | None = None) -> bytes:
 
 
 def _is_extended(id_tok: str, arb_id: int) -> bool:
-    # 1.x/2.x write 8 digits for a 29-bit ID even when its value is small.
-    return len(id_tok) >= 8 or arb_id > 0x7FF
+    # PEAK writes 4 digits for an 11-bit ID (3 in 3.0) and 8 for a 29-bit one, even
+    # when its value is small. python-can 4.6.1's TRCWriter writes 7 for a 29-bit ID,
+    # so anything wider than 4 digits is extended.
+    return len(id_tok) > 4 or arb_id > 0x7FF
 
 
 class PeakTrcParser(BaseParser):
