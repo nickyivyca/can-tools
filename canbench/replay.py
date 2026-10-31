@@ -48,6 +48,57 @@ class ReplayInputError(ValueError):
     """The input cannot be replayed as asked; the message says why and what to do."""
 
 
+def assign_adapters(buses, adapters, pins=(), matches=None):
+    """Which adapter each replayed bus goes out on: ``{bus: index into adapters}``.
+
+    ``pins`` are ``BUS=ID`` strings (``--adapter``): BUS is a replayed bus as
+    the summary names it (``d_can``, ``1``), ID one of the adapter's ids (see
+    ``canbench.live.receiver.Adapter``; a bare serial works). ``matches(adapter,
+    id)`` defaults to ``receiver.adapter_matches``.
+
+    One adapter and no pins: every bus goes out on it. Two or more adapters:
+    every bus must be pinned to exactly one. Detection order follows plug order
+    (canN, PCAN_USBBUSn, Kvaser channel numbers, a libusb scan index), so
+    taking the first adapter, or pairing buses with adapters by position, would
+    be a guess about which wire each adapter is on. Raises ReplayInputError
+    naming the adapters and their ids instead.
+    """
+    if matches is None:
+        from canbench.live.receiver import adapter_matches as matches
+    listing = "\n".join(f"  {getattr(a, 'desc', a[2])}  ids: "
+                         f"{', '.join(getattr(a, 'ids', ())) or 'none'}" for a in adapters)
+    names = {str(b).lower(): b for b in buses}
+    out = {}
+    for pin in pins:
+        bus, sep, key = pin.partition("=")
+        if not sep or not bus.strip() or not key.strip():
+            raise ReplayInputError(f"--adapter {pin!r}: expected BUS=ID, e.g. d_can=serial:HW123456")
+        b = names.get(bus.strip().lower())
+        if b is None:
+            raise ReplayInputError(f"--adapter {pin!r}: no replayed bus {bus.strip()!r}; "
+                                   f"buses: {', '.join(str(x) for x in buses)}")
+        hit = [i for i, a in enumerate(adapters) if matches(a, key)]
+        if len(hit) != 1:
+            raise ReplayInputError(
+                f"--adapter {pin!r}: {'no adapter has' if not hit else f'{len(hit)} adapters have'} "
+                f"id {key.strip()!r}. Detected:\n{listing}")
+        if b in out and out[b] != hit[0]:
+            raise ReplayInputError(f"--adapter: bus {b} pinned twice")
+        out[b] = hit[0]
+    if out:
+        missing = [b for b in buses if b not in out]
+        if missing:
+            raise ReplayInputError(f"--adapter: pin every replayed bus; not pinned: "
+                                   f"{', '.join(str(b) for b in missing)}")
+        return out
+    if len(adapters) == 1:
+        return {b: 0 for b in buses}
+    raise ReplayInputError(
+        f"{len(adapters)} adapters detected and nothing says which bus goes out on which. "
+        f"Pin each bus with --adapter BUS=ID (buses: {', '.join(str(b) for b in buses)}), "
+        f"or narrow --brands to one adapter. Detected:\n{listing}")
+
+
 @dataclass
 class ReplayLoad:
     """What ``load_for_replay`` read, kept and left out."""

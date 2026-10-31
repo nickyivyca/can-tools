@@ -4,7 +4,9 @@ This module is shared by can_logger.py and can_monitor.py so neither duplicates
 the hardware plumbing.
 
 Public API:
-    detect_all_can_interfaces(bitrate, brands=None) -> list of (iface, ch_spec, desc)
+    detect_all_can_interfaces(bitrate, brands=None) -> list of Adapter
+        (unpacks as (iface, ch_spec, desc); .ids names the physical adapter)
+    adapter_matches(adapter, key) -> bool, for --adapter
     socketcan_interfaces() -> list of (name, driver, is_up), Linux only
     CANBusLogger(bus_id, bus, message_queue, iface, ch, bitrate)
 """
@@ -12,9 +14,11 @@ Public API:
 import can
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
+from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +256,57 @@ _ARPHRD_CAN = '280'
 _IFF_UP = 0x1
 
 
+class Adapter(namedtuple('Adapter', 'interface channel desc')):
+    """One detected adapter. Unpacks as ``(interface, channel_spec, desc)``.
+
+    ``ids`` are the names ``--adapter`` matches. ``serial:<s>`` (the USB serial,
+    IXXAT hardware id or Kvaser S/N) and ``usb:<port path>`` (SocketCAN) name a
+    physical adapter and survive replugging. ``<interface>:<channel>`` (canN,
+    PCAN_USBBUSn, a Kvaser channel number, a libusb scan index) follows plug or
+    driver order and only says which slot the adapter is in today.
+    ``pcan-id:<n>`` is the device number set with PEAK's tools.
+    """
+
+    def __new__(cls, interface, channel, desc, ids=()):
+        self = super().__new__(cls, interface, channel, desc)
+        self.ids = tuple(ids)
+        return self
+
+
+def adapter_matches(adapter, key):
+    """True if ``key`` names ``adapter``: one of its ids, or a bare serial."""
+    k = key.strip().lower()
+    ids = {i.lower() for i in getattr(adapter, 'ids', ())}
+    return k in ids or f'serial:{k}' in ids
+
+
+def _with_ids(desc, ids):
+    """desc plus the ids that name the physical adapter, for consoles and logs."""
+    phys = [i for i in ids if i.startswith(('serial:', 'usb:', 'pcan-id:'))]
+    return f"{desc} [{', '.join(phys)}]" if phys else desc
+
+
+def _sysfs_usb_identity(root, name):
+    """(serial, USB port path) of the USB device behind a SocketCAN interface.
+
+    Either is None when sysfs does not give it (vcan, a non-USB adapter, a
+    device without a serial string).
+    """
+    try:
+        usb = os.path.dirname(os.path.realpath(os.path.join(root, name, 'device')))
+    except OSError:
+        return None, None
+    if not os.path.exists(os.path.join(usb, 'busnum')):
+        return None, None
+    serial = None
+    try:
+        with open(os.path.join(usb, 'serial')) as fh:
+            serial = fh.read().strip() or None
+    except OSError:
+        pass
+    return serial, os.path.basename(usb)
+
+
 def socketcan_interfaces(root='/sys/class/net'):
     """SocketCAN interfaces on this host as (name, driver, is_up), by content.
 
@@ -281,6 +336,18 @@ def socketcan_interfaces(root='/sys/class/net'):
     return out
 
 
+def _gs_usb_serial(dev):
+    """USB serial string of a gs_usb scan result, or None."""
+    for obj in (dev, getattr(dev, 'gs_usb', None)):
+        try:
+            sn = getattr(obj, 'serial_number', None)
+        except Exception:
+            sn = None
+        if sn:
+            return str(sn).strip()
+    return None
+
+
 def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
     """Detect all available CAN interfaces.
 
@@ -290,10 +357,13 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                 (e.g. {'ixxat', 'kvaser'}). None means detect all brands.
 
     Returns:
-        List of (interface, channel_spec, description) tuples
+        List of Adapter, each unpacking as (interface, channel_spec, description)
         where channel_spec can be:
         - int for simple channel number
         - dict for ixxat with {'channel': 0, 'unique_hardware_id': 'HW123456'}
+        and with ``.ids`` naming the physical adapter where the backend says
+        (serial, USB port; see Adapter). The list is in detection order, which
+        follows plug order: pick adapters by ids, not by position.
     """
     interfaces = []
     sockcan = socketcan_interfaces(_sysfs)
@@ -308,8 +378,9 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                     channel_spec = {'channel': 0, 'unique_hardware_id': hwid}
                     bus = can.interface.Bus(interface='ixxat', bitrate=bitrate, **channel_spec)
                     bus.shutdown()
-                    interfaces.append(('ixxat', channel_spec, f'ixxat {hwid}'))
-                    logger.info(f"Detected ixxat {hwid}")
+                    ids = (f'serial:{hwid}', f'ixxat:{hwid}')
+                    interfaces.append(Adapter('ixxat', channel_spec, _with_ids(f'ixxat {hwid}', ids), ids))
+                    logger.info(f"Detected {interfaces[-1].desc}")
                 except Exception as e:
                     logger.debug(f"ixxat {hwid}: {e}")
         except ImportError:
@@ -328,14 +399,16 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
             try:
                 from gs_usb.gs_usb import GsUsb
                 devs = GsUsb.scan()
-                count = len(devs)
+                serials = [_gs_usb_serial(d) for d in devs]
                 # Release scan handles before opening so the per-device open
                 # (which re-scans internally) does not hit a busy interface.
                 del devs
-                for i in range(count):
+                for i, sn in enumerate(serials):
                     channel_spec = {'channel': 'can0', 'index': i}
-                    interfaces.append(('gs_usb', channel_spec, f'gs_usb (Innomaker) index {i}'))
-                    logger.info(f"Detected gs_usb (Innomaker) index {i}")
+                    ids = ((f'serial:{sn}',) if sn else ()) + (f'gs_usb:{i}',)
+                    interfaces.append(Adapter('gs_usb', channel_spec,
+                                              _with_ids(f'gs_usb (Innomaker) index {i}', ids), ids))
+                    logger.info(f"Detected {interfaces[-1].desc}")
             except ImportError:
                 logger.warning("gs_usb interface not available "
                                "(pip install \"python-can[gs_usb]\" libusb-package)")
@@ -356,8 +429,13 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                     logger.debug(f"Skipping kvaser channel {ch} (virtual device)")
                     continue
 
-                interfaces.append(('kvaser', ch, f'kvaser channel {ch}'))
-                logger.info(f"Detected kvaser channel {ch}")
+                ids = (f'kvaser:{ch}',)
+                m = re.search(r'S/N\s*(\S+)\s*\(#(\d+)\)', channel_info)
+                if m:
+                    # A two-channel Kvaser has one S/N: serial:<sn>#<n> names the channel
+                    ids = (f'serial:{m.group(1)}#{m.group(2)}', f'serial:{m.group(1)}') + ids
+                interfaces.append(Adapter('kvaser', ch, _with_ids(f'kvaser channel {ch}', ids), ids))
+                logger.info(f"Detected {interfaces[-1].desc}")
             except Exception as e:
                 logger.debug(f"kvaser channel {ch}: {e}")
 
@@ -366,9 +444,14 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
         for ch in ['PCAN_USBBUS1', 'PCAN_USBBUS2', 'PCAN_USBBUS3', 'PCAN_USBBUS4']:
             try:
                 bus = can.interface.Bus(interface='pcan', channel=ch, bitrate=bitrate)
+                ids = (f'pcan:{ch}',)
+                try:
+                    ids = (f'pcan-id:{int(bus.get_device_number())}',) + ids
+                except Exception as e:
+                    logger.debug(f"pcan {ch}: no device number: {e}")
                 bus.shutdown()
-                interfaces.append(('pcan', ch, f'pcan {ch}'))
-                logger.info(f"Detected pcan {ch}")
+                interfaces.append(Adapter('pcan', ch, _with_ids(f'pcan {ch}', ids), ids))
+                logger.info(f"Detected {interfaces[-1].desc}")
             except Exception as e:
                 logger.debug(f"pcan {ch}: {e}")
 
@@ -388,8 +471,11 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
         try:
             bus = can.interface.Bus(interface='socketcan', channel=ch, bitrate=bitrate)
             bus.shutdown()
-            desc = f'socketcan {ch} ({driver or "virtual"})'
-            interfaces.append(('socketcan', ch, desc))
+            serial, port = _sysfs_usb_identity(_sysfs, ch)
+            ids = ((f'serial:{serial}',) if serial else ()) + ((f'usb:{port}',) if port else ()) \
+                + (f'socketcan:{ch}',)
+            desc = _with_ids(f'socketcan {ch} ({driver or "virtual"})', ids)
+            interfaces.append(Adapter('socketcan', ch, desc, ids))
             logger.info(f"Detected {desc}")
         except Exception as e:
             logger.debug(f"socketcan {ch}: {e}")

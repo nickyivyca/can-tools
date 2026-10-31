@@ -72,6 +72,13 @@ The replayer never transmits non-frame records (BUSMASTER `ERR`, TRC
 `ER`/`ST`/`EC`/`EV`), error frames, or frames marked as inferred adapter error
 reports (`canbench/parsers/inferred_errors.py`); it counts each in its summary.
 
+Adapters are chosen the same way: by identity, not position. With one adapter
+detected, every replayed bus goes out on it. With two or more, pin each bus with
+`--adapter BUS=ID`, using the ids printed at startup (`serial:<s>` or
+`usb:<port>` name a physical adapter; `canN`, `PCAN_USBBUSn` and Kvaser channel
+numbers follow plug order), or narrow `--brands` to one; otherwise the replayer
+refuses rather than guess which wire each adapter is on.
+
 See `tools/README-can_logger.md` for the logger's hardware handling and ixxat
 overflow recovery.
 

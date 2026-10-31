@@ -25,6 +25,8 @@ candump / SocketCAN line format:
 
 - `(epoch.us)` absolute Unix timestamp, microsecond resolution
 - `can0` / `can1` / ... the logical bus (dongle detection order)
+  (the console names each adapter's serial / USB port at startup; the bus is
+  identified by content, not by this number)
 - `id#data` hex arbitration id and payload
 
 Read/replay of `.asc` and `.blf` is also supported (by extension); the *writer*

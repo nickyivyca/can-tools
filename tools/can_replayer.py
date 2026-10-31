@@ -15,14 +15,18 @@ Never transmitted, and counted in the summary: non-frame records (BUSMASTER ``ER
 TRC ``ER`` / ``ST`` / ``EC`` / ``EV``), error frames, and frames marked as inferred
 adapter error reports (``canbench/parsers/inferred_errors.py``).
 
-Channel mapping:
-  - If the log has the same number of buses as connected dongles, each log bus
-    is sent through the corresponding dongle in order (numbers, then bus names).
-  - Otherwise all frames are sent on the first/only dongle.
+Choosing an adapter: with one adapter detected, every replayed bus goes out on it.
+With two or more, pin each bus with ``--adapter BUS=ID`` (ids are printed at startup:
+``serial:<s>`` and ``usb:<port>`` name a physical adapter; canN, PCAN_USBBUSn and
+Kvaser channel numbers follow plug order), or narrow ``--brands`` to one adapter.
+Detection order follows plug order, so the replayer refuses rather than guess.
+Only the adapters something is sent on are opened.
 
 Usage:
     python tools/can_replayer.py capture.log
     python tools/can_replayer.py capture.log --brands ixxat
+    python tools/can_replayer.py drive.log --vehicle coda --adapter b_can=serial:HW123456 \
+        --adapter d_can=usb:1-10.2
     python tools/can_replayer.py capture.log --speed 2.0 --loop
     python tools/can_replayer.py capture.log --speed 0   # no delay, as fast as possible
     python tools/can_replayer.py drive_T0.log --session --vehicle coda --bus d_can
@@ -59,7 +63,7 @@ SUPPORTED_SUFFIXES = {'.log', '.asc', '.blf', '.csv', '.trc'}
 
 
 def open_buses(interfaces, bitrate):
-    """Open all detected interfaces as live CAN buses.
+    """Open the given interfaces as live CAN buses.
 
     Returns list of (bus, description) tuples, closing already-opened buses
     on failure.
@@ -183,6 +187,15 @@ def main():
              '(e.g. ixxat or kvaser,pcan). Default: auto-detect all brands.'
     )
     parser.add_argument(
+        '--adapter',
+        action='append',
+        default=[],
+        metavar='BUS=ID',
+        help='Send BUS on the adapter with this id, e.g. d_can=serial:HW123456 or '
+             '1=usb:1-10.1 (ids are listed at startup). Repeat per bus. Needed '
+             'whenever two or more adapters are detected.'
+    )
+    parser.add_argument(
         '--speed', '-s',
         type=float,
         default=1.0,
@@ -264,15 +277,14 @@ def main():
         logger.error("Check that dongles are connected, drivers installed, and brands spelled correctly.")
         sys.exit(1)
 
-    # --- Build channel map ---
-    if len(log_channels) == len(interfaces):
-        # 1:1 mapping: log bus N → dongle index N
-        mapping_desc = "log buses == dongle count, mapping 1:1"
-        channel_map_iface = {ch: interfaces[i] for i, ch in enumerate(log_channels)}
-    else:
-        # All frames → first dongle
-        mapping_desc = "bus count mismatch, all frames → first dongle"
-        channel_map_iface = {ch: interfaces[0] for ch in log_channels}
+    # --- Build channel map: pinned by --adapter, or the only adapter ---
+    try:
+        assignment = replay.assign_adapters(log_channels, interfaces, args.adapter)
+    except replay.ReplayInputError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    mapping_desc = "pinned by --adapter" if args.adapter else "one adapter, every bus"
+    channel_map_iface = {ch: interfaces[i] for ch, i in assignment.items()}
 
     # --- Print startup summary ---
     speed_str = f"{args.speed}x" if args.speed > 0 else "no delay (as fast as possible)"
@@ -306,7 +318,7 @@ def main():
     print()
     print(f"Detected dongles ({len(interfaces)}):")
     for i, (iface, ch, desc) in enumerate(interfaces):
-        print(f"  Dongle {i}: {desc}")
+        print(f"  Dongle {i}: {desc}  ids: {', '.join(getattr(interfaces[i], 'ids', ())) or 'none'}")
     print()
     print(f"Channel mapping ({mapping_desc}):")
     for log_ch, (iface, ch, desc) in channel_map_iface.items():
@@ -322,19 +334,17 @@ def main():
             print("\nAborted.")
             sys.exit(0)
 
-    # --- Open live buses ---
+    # --- Open live buses: only the adapters something is sent on ---
+    used = sorted(set(assignment.values()))
     try:
-        buses = open_buses(interfaces, args.bitrate)
+        buses = open_buses([interfaces[i] for i in used], args.bitrate)
     except Exception as e:
         logger.error(f"Could not open CAN interfaces: {e}")
         sys.exit(1)
 
-    # Build channel_map: log bus id → open Bus object.
-    # buses[i] corresponds to interfaces[i] in order.
-    if len(log_channels) == len(interfaces):
-        channel_map = {ch: buses[i][0] for i, ch in enumerate(log_channels)}
-    else:
-        channel_map = {ch: buses[0][0] for ch in log_channels}
+    # Build channel_map: log bus id -> open Bus object.
+    opened = {i: buses[n][0] for n, i in enumerate(used)}
+    channel_map = {ch: opened[i] for ch, i in assignment.items()}
 
     # --- Set up signal handler ---
     abort_event = threading.Event()
