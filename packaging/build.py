@@ -7,7 +7,9 @@ Produces:
     packaging/dist/can_gui/                  the runnable onedir (exe + _internal + canbench.ini)
     packaging/dist/canbench-logger-win64.zip the thing you send someone
 
-Requires:  py -3.12 -m pip install pyinstaller
+Requires:  the requirements.txt packages, PyQt5 included, plus PyInstaller:
+           py -3.12 -m pip install -r requirements.txt pyinstaller
+           (also built with py -3.14 / PyInstaller 6.22.3 / PyQt5 5.15.11, 2026-10-31)
 Recipients need no Python; only vendor CAN drivers for Kvaser/ixxat/PCAN
 (gs_usb/Innomaker and the virtual/localhost bus need nothing).
 """
