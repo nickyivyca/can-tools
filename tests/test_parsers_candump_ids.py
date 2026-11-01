@@ -1,6 +1,6 @@
 """candump and TRC readers: ID width, error frames, remote requests, CAN FD flags.
 
-Found by reverse-it's step 6a round trip (tools/plans/can-replay-readers.md): the
+Found by the reverse-it project's step 6a round trip (an internal plan, not published): the
 candump reader yielded python-can's error-frame line as a data frame with ID
 0x20000080, a remote request as a 0-byte data frame, and an 8-digit ID of small
 value as standard; the TRC reader read python-can's 7-digit 29-bit IDs as standard.
