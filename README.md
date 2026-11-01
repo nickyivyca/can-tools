@@ -98,3 +98,9 @@ tools/           CLI entry points
 packaging/       PyInstaller onedir build                 (Phase 2)
 tests/           virtual/udp-bus tests, no hardware       (Phase 2)
 ```
+
+## License
+
+GPL-3.0-or-later: see `LICENSE`. The packaged Windows build bundles PyQt5 (GPL) along with
+python-can and libusb (LGPL), so a copy of the zip passed on carries the same terms, with this
+repository as its source.
