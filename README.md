@@ -79,6 +79,13 @@ detected, every replayed bus goes out on it. With two or more, pin each bus with
 numbers follow plug order), or narrow `--brands` to one; otherwise the replayer
 refuses rather than guess which wire each adapter is on.
 
+`<interface>:serial:<s>` also names the backend. On Linux an Innomaker is either on
+the kernel's gs_usb driver (SocketCAN) or on libusb (python-can `gs_usb`), with the
+same serial: `serial:<s>` matches it on whichever it is on, `socketcan:serial:<s>`
+or `gs_usb:serial:<s>` only on that backend, and a pin to the wrong backend is
+refused with the reason. Innomakers can be on both backends at once: detection
+lists each libusb one (opened by USB bus and address) beside the SocketCAN ones.
+
 See `tools/README-can_logger.md` for the logger's hardware handling and ixxat
 overflow recovery.
 

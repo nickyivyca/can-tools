@@ -78,6 +78,11 @@ def assign_adapters(buses, adapters, pins=(), matches=None):
             raise ReplayInputError(f"--adapter {pin!r}: no replayed bus {bus.strip()!r}; "
                                    f"buses: {', '.join(str(x) for x in buses)}")
         hit = [i for i, a in enumerate(adapters) if matches(a, key)]
+        if not hit:
+            from canbench.live.receiver import backend_mismatch
+            why = backend_mismatch(adapters, key)
+            if why:
+                raise ReplayInputError(f"--adapter {pin!r}: {why}. Detected:\n{listing}")
         if len(hit) != 1:
             raise ReplayInputError(
                 f"--adapter {pin!r}: {'no adapter has' if not hit else f'{len(hit)} adapters have'} "

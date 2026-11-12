@@ -273,6 +273,13 @@ class Adapter(namedtuple('Adapter', 'interface channel desc')):
     PCAN_USBBUSn, a Kvaser channel number, a libusb scan index) follows plug or
     driver order and only says which slot the adapter is in today.
     ``pcan-id:<n>`` is the device number set with PEAK's tools.
+
+    ``<interface>:serial:<s>`` also names the backend it was found on. An
+    Innomaker on Linux can be on the kernel's gs_usb driver (``socketcan``) or
+    on libusb (``gs_usb``), with the same serial either way: ``serial:<s>``
+    matches it on whichever it is on, ``gs_usb:serial:<s>`` only on libusb and
+    ``socketcan:serial:<s>`` only on SocketCAN. ``backend_mismatch`` explains a
+    backend-qualified id that names an adapter found on the other backend.
     """
 
     def __new__(cls, interface, channel, desc, ids=()):
@@ -286,6 +293,29 @@ def adapter_matches(adapter, key):
     k = key.strip().lower()
     ids = {i.lower() for i in getattr(adapter, 'ids', ())}
     return k in ids or f'serial:{k}' in ids
+
+
+def backend_mismatch(adapters, key):
+    """Why a backend-qualified ``<interface>:serial:<s>`` matched nothing, or None.
+
+    Returns a message when an adapter with serial ``<s>`` was found, but on a
+    different backend (an Innomaker on SocketCAN when ``gs_usb:serial:<s>``
+    asked for libusb, or the reverse), so the caller can refuse with the reason
+    instead of "no adapter has id".
+    """
+    want, sep, rest = key.strip().lower().partition(':')
+    if not sep or not rest.startswith('serial:'):
+        return None
+    for a in adapters:
+        ids = {i.lower() for i in getattr(a, 'ids', ())}
+        if rest in ids:
+            have = a[0]
+            if have.lower() != want:
+                return (f"id {key.strip()!r}: adapter {rest[len('serial:'):]} is on {have}, not {want}. "
+                        f"Rebind it to the {want} backend (an Innomaker on Linux: "
+                        f"{'unbind' if want == 'gs_usb' else 'bind'} the kernel gs_usb driver), "
+                        f"or pin {have}:{rest} / {rest}")
+    return None
 
 
 def _with_ids(desc, ids):
@@ -356,6 +386,18 @@ def _gs_usb_serial(dev):
     return None
 
 
+def _gs_usb_kernel_bound(dev):
+    """True if a kernel driver holds a gs_usb scan result's interface 0 (Linux SocketCAN).
+
+    Asked through libusb without claiming the device. False where the platform
+    cannot say (Windows: WinUSB is not a kernel driver in this sense).
+    """
+    try:
+        return bool(dev.gs_usb.is_kernel_driver_active(0))
+    except Exception:
+        return False
+
+
 def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
     """Detect all available CAN interfaces.
 
@@ -386,7 +428,7 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                     channel_spec = {'channel': 0, 'unique_hardware_id': hwid}
                     bus = can.interface.Bus(interface='ixxat', bitrate=bitrate, **channel_spec)
                     bus.shutdown()
-                    ids = (f'serial:{hwid}', f'ixxat:{hwid}')
+                    ids = (f'serial:{hwid}', f'ixxat:serial:{hwid}', f'ixxat:{hwid}')
                     interfaces.append(Adapter('ixxat', channel_spec, _with_ids(f'ixxat {hwid}', ids), ids))
                     logger.info(f"Detected {interfaces[-1].desc}")
                 except Exception as e:
@@ -399,21 +441,30 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
     # Detect gs_usb devices (Innomaker USB2CAN / candleLight firmware).
     # These enumerate as VID 0x1D50 / PID 0x606F with WinUSB auto-bound.
     if brands is None or 'gs_usb' in brands or (brands and 'innomaker' in brands):
-        if any(drv == 'gs_usb' for _, drv, _ in sockcan):
-            # The kernel driver holds it: it is a SocketCAN interface (below), and
-            # opening it through libusb would take it from the kernel.
-            logger.debug("gs_usb: bound to the Linux gs_usb driver; using SocketCAN, not libusb")
-        elif _ensure_gs_usb_libusb():
+        if _ensure_gs_usb_libusb():
             try:
                 from gs_usb.gs_usb import GsUsb
                 devs = GsUsb.scan()
-                serials = [_gs_usb_serial(d) for d in devs]
+                found = [(_gs_usb_serial(d), getattr(d.gs_usb, 'bus', None),
+                          getattr(d.gs_usb, 'address', None), _gs_usb_kernel_bound(d)) for d in devs]
                 # Release scan handles before opening so the per-device open
-                # (which re-scans internally) does not hit a busy interface.
+                # (which finds the device again) does not hit a busy interface.
                 del devs
-                for i, sn in enumerate(serials):
-                    channel_spec = {'channel': 'can0', 'index': i}
-                    ids = ((f'serial:{sn}',) if sn else ()) + (f'gs_usb:{i}',)
+                for i, (sn, usb_bus, usb_addr, bound) in enumerate(found):
+                    if bound:
+                        # The Linux gs_usb driver holds it: it is a SocketCAN interface
+                        # (below), and opening it through libusb would take it from the
+                        # kernel. The others stay usable through libusb (a mixed bench).
+                        logger.debug(f"gs_usb {sn or i}: held by the kernel gs_usb driver; "
+                                     f"SocketCAN, not libusb")
+                        continue
+                    # Opened by USB bus/address, not scan index: the scan also lists
+                    # kernel-held devices, and its order is not plug order.
+                    if usb_bus is not None and usb_addr is not None:
+                        channel_spec = {'channel': f'gs_usb:{sn or i}', 'bus': usb_bus, 'address': usb_addr}
+                    else:
+                        channel_spec = {'channel': 'can0', 'index': i}
+                    ids = ((f'serial:{sn}', f'gs_usb:serial:{sn}') if sn else ()) + (f'gs_usb:{i}',)
                     interfaces.append(Adapter('gs_usb', channel_spec,
                                               _with_ids(f'gs_usb (Innomaker) index {i}', ids), ids))
                     logger.info(f"Detected {interfaces[-1].desc}")
@@ -441,7 +492,8 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                 m = re.search(r'S/N\s*(\S+)\s*\(#(\d+)\)', channel_info)
                 if m:
                     # A two-channel Kvaser has one S/N: serial:<sn>#<n> names the channel
-                    ids = (f'serial:{m.group(1)}#{m.group(2)}', f'serial:{m.group(1)}') + ids
+                    ids = (f'serial:{m.group(1)}#{m.group(2)}', f'serial:{m.group(1)}',
+                           f'kvaser:serial:{m.group(1)}#{m.group(2)}', f'kvaser:serial:{m.group(1)}') + ids
                 interfaces.append(Adapter('kvaser', ch, _with_ids(f'kvaser channel {ch}', ids), ids))
                 logger.info(f"Detected {interfaces[-1].desc}")
             except Exception as e:
@@ -480,7 +532,8 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
             bus = can.interface.Bus(interface='socketcan', channel=ch, bitrate=bitrate)
             bus.shutdown()
             serial, port = _sysfs_usb_identity(_sysfs, ch)
-            ids = ((f'serial:{serial}',) if serial else ()) + ((f'usb:{port}',) if port else ()) \
+            ids = ((f'serial:{serial}', f'socketcan:serial:{serial}') if serial else ()) \
+                + ((f'usb:{port}',) if port else ()) \
                 + (f'socketcan:{ch}',)
             desc = _with_ids(f'socketcan {ch} ({driver or "virtual"})', ids)
             interfaces.append(Adapter('socketcan', ch, desc, ids))

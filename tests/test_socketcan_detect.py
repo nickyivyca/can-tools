@@ -107,8 +107,9 @@ TWO_INNOMAKERS = [("can0", 280, "gs_usb", "0x40081", "1-10.2", "0011223344556677
 def test_adapter_ids_from_sysfs():
     got = {a.channel: a.ids for a in _adapters({"socketcan"}, TWO_INNOMAKERS)}
     assert got == {
-        "can0": ("serial:0011223344556677AABBCCDD", "usb:1-10.2", "socketcan:can0"),
-        "can1": ("serial:HW123456", "usb:1-10.1", "socketcan:can1"),
+        "can0": ("serial:0011223344556677AABBCCDD", "socketcan:serial:0011223344556677AABBCCDD",
+                 "usb:1-10.2", "socketcan:can0"),
+        "can1": ("serial:HW123456", "socketcan:serial:HW123456", "usb:1-10.1", "socketcan:can1"),
         "can2": ("usb:1-10.3", "socketcan:can2"),       # no serial string: port only
     }
     a = _adapters({"ixxat"}, TWO_INNOMAKERS)[0]
