@@ -88,6 +88,10 @@ overflow recovery.
 canbench/
   live/          dongle detection, per-bus RX threads, ixxat USB reset
                  (see live/pcan-busoff-recovery.md for the PCAN bus-off / no-ACK failure mode)
+                 linux_fixes.py: two Linux workarounds applied when receiver is imported (or call
+                 linux_fixes.apply()): python-can's Kvaser backend on linuxcan (SET_LOCAL_TXACK needs a
+                 4-byte buffer) and gs_usb's start() without the USB reset that makes an Innomaker
+                 re-enumerate. Hand an Innomaker back to the kernel in-process only after release_gs_usb().
   logio.py       log read/write: content-detected reading, candump writing
   replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent
   parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.0-2.1, ASC, SavvyCAN); parsers.md

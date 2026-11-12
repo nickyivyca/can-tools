@@ -9,6 +9,8 @@ Public API:
     adapter_matches(adapter, key) -> bool, for --adapter
     socketcan_interfaces() -> list of (name, driver, is_up), Linux only
     CANBusLogger(bus_id, bus, message_queue, iface, ch, bitrate)
+
+On import it applies canbench.live.linux_fixes (Kvaser on linuxcan; gs_usb start without a USB reset).
 """
 
 import can
@@ -20,7 +22,13 @@ import threading
 import time
 from collections import namedtuple
 
+from canbench.live import linux_fixes
+
 logger = logging.getLogger(__name__)
+
+# python-can's Kvaser backend and the gs_usb package both fail to open real adapters on Linux without
+# these (see linux_fixes); no-ops elsewhere.
+linux_fixes.apply()
 
 
 _gs_usb_libusb_ready = None
