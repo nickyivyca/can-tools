@@ -67,12 +67,13 @@
      51        32.502 EV  1 canbench-raw linux id=00000001 data=00 00 00 00 00 00 00 00
      52        33.803 EC  2        - Rx -  2    0C 28
      53        33.803 EV  2 canbench-raw linux id=00000200 data=00 00 00 00 00 00 28 0C
-     54        35.103 ER  3        - Rx -  5    08 01 00 07 05
-     55        35.103 EV  3 canbench-raw linux id=00000000 data=00 00 00 00 00 00 05 07
-     56        36.403 ST  1        - Rx -  4    00 00 00 02
-     57        36.403 EV  1 canbench-raw linux id=00000004 data=00 01 00 00 00 00 00 00
-     58        37.703 EV  2 canbench-raw linux id=00000004 data=00 02 00 00 00 00 00 00
-     59        39.003 EV  3 canbench-raw linux id=00000002 data=0B 00 00 00 00 00 00 00
-     60        40.303 ER  1        - Rx -  5    08 01 00 00 00
-     61        40.303 EV  1 canbench-raw linux id=00000000 data=00 00 00 00 00 00 00 00
-     62        41.603 DT  1     07A3 Rx -  8    FF FF FF FF FF FF FF FF
+     54        35.103 EV  3 canbench-raw linux id=00000200 data=00 00 00 00 00 00 00 00
+     55        36.403 ER  1        - Rx -  5    08 01 00 07 05
+     56        36.403 EV  1 canbench-raw linux id=00000000 data=00 00 00 00 00 00 05 07
+     57        37.703 ST  2        - Rx -  4    00 00 00 02
+     58        37.703 EV  2 canbench-raw linux id=00000004 data=00 01 00 00 00 00 00 00
+     59        39.003 EV  3 canbench-raw linux id=00000004 data=00 02 00 00 00 00 00 00
+     60        40.303 EV  1 canbench-raw linux id=00000002 data=0B 00 00 00 00 00 00 00
+     61        41.603 ER  2        - Rx -  5    08 01 00 00 00
+     62        41.603 EV  2 canbench-raw linux id=00000000 data=00 00 00 00 00 00 00 00
+     63        42.903 DT  1     07A3 Rx -  8    FF FF FF FF FF FF FF FF

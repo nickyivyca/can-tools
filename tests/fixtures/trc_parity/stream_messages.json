@@ -606,6 +606,29 @@
  {
   "timestamp": 1794586450.732103,
   "channel": 2,
+  "arbitration_id": 512,
+  "is_extended_id": false,
+  "is_remote_frame": false,
+  "is_error_frame": true,
+  "is_fd": false,
+  "bitrate_switch": false,
+  "error_state_indicator": false,
+  "is_rx": true,
+  "dlc": 8,
+  "data": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ]
+ },
+ {
+  "timestamp": 1794586450.733403,
+  "channel": 0,
   "arbitration_id": 0,
   "is_extended_id": false,
   "is_remote_frame": false,
@@ -627,8 +650,8 @@
   ]
  },
  {
-  "timestamp": 1794586450.733403,
-  "channel": 0,
+  "timestamp": 1794586450.734703,
+  "channel": 1,
   "arbitration_id": 4,
   "is_extended_id": false,
   "is_remote_frame": false,
@@ -650,8 +673,8 @@
   ]
  },
  {
-  "timestamp": 1794586450.734703,
-  "channel": 1,
+  "timestamp": 1794586450.736003,
+  "channel": 2,
   "arbitration_id": 4,
   "is_extended_id": false,
   "is_remote_frame": false,
@@ -673,8 +696,8 @@
   ]
  },
  {
-  "timestamp": 1794586450.736003,
-  "channel": 2,
+  "timestamp": 1794586450.737303,
+  "channel": 0,
   "arbitration_id": 2,
   "is_extended_id": false,
   "is_remote_frame": false,
@@ -696,8 +719,8 @@
   ]
  },
  {
-  "timestamp": 1794586450.737303,
-  "channel": 0,
+  "timestamp": 1794586450.738603,
+  "channel": 1,
   "arbitration_id": 0,
   "is_extended_id": false,
   "is_remote_frame": false,
@@ -719,7 +742,7 @@
   ]
  },
  {
-  "timestamp": 1794586450.738603,
+  "timestamp": 1794586450.739903,
   "channel": 0,
   "arbitration_id": 1955,
   "is_extended_id": false,

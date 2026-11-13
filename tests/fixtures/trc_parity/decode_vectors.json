@@ -957,6 +957,40 @@
   ]
  },
  {
+  "name": "counters_cnt_zero",
+  "what": "CNT only with both counters zero (kvaser_usb's 512 ms report while not error-active): counters unknown, no record",
+  "frame": {
+   "class_bits": 512,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": []
+ },
+ {
   "name": "no_class_with_counters",
   "what": "no class bits, counters in bytes 6/7 without CNT: an error frame with no known class is a bus error (ER, type other)",
   "frame": {

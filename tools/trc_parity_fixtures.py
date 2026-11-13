@@ -88,6 +88,8 @@ CASES = [
      E.CAN_ERR_TX_TIMEOUT, [0] * 8),
     ("counters_cnt", "counters only, with CNT",
      E.CAN_ERR_CNT, [0, 0, 0, 0, 0, 0, 40, 12]),
+    ("counters_cnt_zero", "CNT only with both counters zero (kvaser_usb's 512 ms report while not error-active): counters unknown, no record",
+     E.CAN_ERR_CNT, [0] * 8),
     ("no_class_with_counters", "no class bits, counters in bytes 6/7 without CNT: an error frame with no known class is a bus error (ER, type other)",
      0, [0, 0, 0, 0, 0, 0, 5, 7]),
     ("rx_overflow", "receive overflow (CRTL, RX_OVERFLOW)",

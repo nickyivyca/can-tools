@@ -50,8 +50,10 @@ def test_fixture_cover_every_case_and_records():
     assert by["buserr_crc_rx"]["trc_records"] == [["ER", "Rx", [8, 1, 8, 25, 0]]]
     assert by["rx_overflow"]["trc_records"] == [["ST", "Rx", [0, 0, 0, 2]]]
     assert by["counters_cnt"]["trc_records"] == [["EC", "Rx", [12, 40]]]
+    assert by["counters_cnt_zero"]["report"]["rx_count"] is None and by["counters_cnt_zero"]["trc_records"] == []
     assert by["no_class_with_counters"]["trc_records"] == [["ER", "Rx", [8, 1, 0, 7, 5]]]   # no known class: a bus error
     assert by["state_active_no_prot_no_counters"]["report"]["rx_count"] is None
+    assert by["busoff"]["report"]["tx_count"] == 255       # CNT with another class: zeros or not, counters known
 
 
 def test_start_time_is_utc_and_local_comment_reads_back():

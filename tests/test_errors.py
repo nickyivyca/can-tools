@@ -60,6 +60,16 @@ def test_gs_usb_state_frame_is_a_state_change_not_a_bus_error():
                                 ("EC", "Rx", bytes([0x90, 0]))]
 
 
+def test_cnt_only_zero_counters_are_unknown():
+    """kvaser_usb sends CAN_ERR_CNT alone, all data zero, every 512 ms while not error-active (2026-11-13)."""
+    r = E.decode(E.error_frame(E.CAN_ERR_CNT, [0] * 8))
+    assert r.rx_count is None and r.tx_count is None and E.trc_records(r) == []
+    r = E.decode(E.error_frame(E.CAN_ERR_CNT, [0, 0, 0, 0, 0, 0, 0, 3]))
+    assert (r.tx_count, r.rx_count) == (0, 3)
+    r = E.decode(E.error_frame(E.CAN_ERR_CNT | E.CAN_ERR_CRTL, [0, E.CAN_ERR_CRTL_ACTIVE, 0, 0, 0, 0, 0, 0]))
+    assert (r.tx_count, r.rx_count) == (0, 0)          # CNT with another class: the zeros are a report
+
+
 def test_counters_zero_without_flag_are_unknown():
     r = E.decode(linux(E.CAN_ERR_CRTL | E.CAN_ERR_PROT, [0, 0, E.CAN_ERR_PROT_STUFF, 0, 0, 0, 0, 0]))
     assert r.rx_count is None and r.tx_count is None and r.state is None

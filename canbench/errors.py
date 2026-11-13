@@ -27,7 +27,10 @@ Rules worth knowing (each one is a test in tests/test_errors.py):
   kept in ``last_error_type``.
 * Error counters are known when ``CAN_ERR_CNT`` is set, or when bytes 6 and 7
   are not both zero: gs_usb fills them without setting the flag. Zero counters
-  without the flag are unknown.
+  without the flag are unknown, and so are zero counters in a frame whose only
+  class is ``CAN_ERR_CNT``: kvaser_usb sends one every 512 ms while the
+  controller is not error-active, all data zero although passive means a
+  counter of 128 or more (owner, 2026-11-13).
 * PEAK's error position codes are the SJA1000 ECC segment codes, and so are
   error.h's ``CAN_ERR_PROT_LOC_*`` values: the position is copied unchanged.
 """
@@ -185,7 +188,8 @@ def decode(msg: can.Message) -> ErrorReport | None:
     r.tx_overflow = bool(crtl & CAN_ERR_CRTL_TX_OVERFLOW)
 
     # counters
-    if n >= 8 and (cls & CAN_ERR_CNT or d[6] or d[7]):
+    cnt_only_zero = (cls & _KNOWN_CLASSES) == CAN_ERR_CNT and not (d[6] or d[7])
+    if n >= 8 and (cls & CAN_ERR_CNT or d[6] or d[7]) and not cnt_only_zero:
         r.tx_count, r.rx_count = d[6], d[7]
 
     if cls & CAN_ERR_LOSTARB:
