@@ -22,6 +22,13 @@ Kvaser channel numbers follow plug order), or narrow ``--brands`` to one adapter
 Detection order follows plug order, so the replayer refuses rather than guess.
 Only the adapters something is sent on are opened.
 
+Send failures (2026-11-13): a send that raises is counted per bus, not retried. The
+first failure of each kind on a bus is logged with its frame number, then one line per
+10 s while that bus keeps failing. The summary gives each failing bus its sent and
+failed counts, the errors and the log time span of the failures, and says when a signal
+stopped the replay early. Exit status: 0 when every send went out, 3 when any failed,
+1 when the adapters could not be opened.
+
 Usage:
     python tools/can_replayer.py capture.log
     python tools/can_replayer.py capture.log --brands ixxat
@@ -88,7 +95,7 @@ def open_buses(interfaces, bitrate):
     return buses
 
 
-def replay_once(frames, channel_map, speed, abort_event):
+def replay_once(frames, channel_map, speed, abort_event, stats=None):
     """Transmit all frames once, honouring timing.
 
     Args:
@@ -96,18 +103,23 @@ def replay_once(frames, channel_map, speed, abort_event):
         channel_map: dict mapping output key (log bus id or bus name) -> python-can Bus
         speed: float replay speed multiplier (0 = no delay)
         abort_event: threading.Event - set to request early stop
+        stats: canbench.replay.SendStats, counting sends and failures per bus
+            (a new one if None)
 
     Returns:
-        Number of frames transmitted.
+        Number of frames transmitted (sends that did not raise).
     """
+    if stats is None:
+        stats = replay.SendStats()
     if not frames:
         return 0
 
     tx_count = 0
+    total = len(frames)
     start_wall = time.perf_counter()
     log_start_ts = frames[0].timestamp
 
-    for frame in frames:
+    for index, frame in enumerate(frames):
         if abort_event.is_set():
             break
 
@@ -129,9 +141,11 @@ def replay_once(frames, channel_map, speed, abort_event):
         try:
             output_bus.send(msg)
             tx_count += 1
+            stats.ok(frame.channel)
         except can.CanError as e:
-            logger.warning(f"Send error on frame {tx_count}: {e}")
+            stats.fail(frame.channel, index, total, frame.timestamp - log_start_ts, e)
 
+    stats.flush()
     return tx_count
 
 
@@ -362,14 +376,16 @@ def main():
     # --- Replay ---
     pass_num = 0
     total_tx = 0
+    stats = replay.SendStats()
     try:
         while True:
             pass_num += 1
             label = f"pass {pass_num}" if args.loop else "replay"
             logger.info(f"Starting {label} ({len(frames):,} frames)...")
-            tx = replay_once(frames, channel_map, args.speed, abort_event)
+            failed_before = stats.total_failed
+            tx = replay_once(frames, channel_map, args.speed, abort_event, stats)
             total_tx += tx
-            logger.info(f"  Transmitted {tx:,} frames")
+            logger.info(f"  Transmitted {tx:,} frames, {stats.total_failed - failed_before:,} sends failed")
 
             if abort_event.is_set() or not args.loop:
                 break
@@ -378,11 +394,22 @@ def main():
         for bus_obj, desc in buses:
             shutdown_bus(bus_obj)
 
+    passes = f"{pass_num} pass{'es' if pass_num > 1 else ''}"
+    head = "Replay STOPPED by a signal" if abort_event.is_set() else "Replay complete"
     print()
     print("=" * 60)
-    print(f"Replay complete: {total_tx:,} frames transmitted ({pass_num} pass{'es' if pass_num > 1 else ''})")
+    print(f"{head}: {total_tx:,} frames transmitted, {stats.total_failed:,} sends failed ({passes})")
+    if abort_event.is_set() and not args.loop:
+        tried = total_tx + stats.total_failed
+        print(f"Stopped after {tried:,} of {len(frames):,} frames")
+    if stats.total_failed:
+        print("Send failures by bus:")
+        for line in stats.summary_lines():
+            print(f"  {line}")
     print(f"Not sent (per pass): {skipped_summary(load)}")
     print("=" * 60)
+    if stats.total_failed:
+        sys.exit(3)
 
 
 if __name__ == '__main__':

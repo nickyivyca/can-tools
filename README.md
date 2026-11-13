@@ -121,7 +121,7 @@ canbench/
   errors.py      the canonical error record: Linux error-frame decoding, PCAN / Kvaser translations, TRC records
   trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames
   logio.py       log read/write: content-detected reading, candump writing (.trc: trcwriter)
-  replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent
+  replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent; per-bus send failures (SendStats)
   parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.0-2.1, ASC, SavvyCAN); parsers.md
   gui/           PyQt logger GUI                          (Phase 2)
   passthrough.py two-dongle bridge                        (Phase 2)

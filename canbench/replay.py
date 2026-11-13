@@ -286,3 +286,86 @@ def load_for_replay(paths, *, vehicle: Optional[str] = None, bus=None,
     out.sort(key=lambda m: m.timestamp)        # file order is not time order
     load.messages = out
     return load
+
+
+class SendStats:
+    """Per-bus send results of a replay, with rate-limited warnings.
+
+    Until 2026-11-13 the replayer logged one warning per failed send and its
+    summary counted only the frames it never tried (``Not sent``), so a replay
+    whose adapter failed part-way still reported "Replay complete" with nothing
+    missing (the Android session's two-bus bench run: 230,922 failed sends,
+    10,785 warning lines per 10 s). Now each bus keeps its sent and failed
+    counts, the failures by error text, and the log time of its first and last
+    failure. The first failure of each kind on a bus is logged with its frame
+    number; after that a bus logs one line per ``report_every_s`` while it keeps
+    failing, and :meth:`flush` reports what is left at the end.
+
+    ``bus`` is the frame's output key (the log bus name or number).
+    """
+
+    def __init__(self, report_every_s: float = 10.0, clock=None, log=None):
+        import logging
+        import time
+        self.report_every_s = report_every_s
+        self._clock = clock or time.monotonic
+        self._log = log or logging.getLogger("canbench.replay")
+        self.sent: Counter = Counter()
+        self.failed: Counter = Counter()
+        self.kinds: Dict[Union[int, str], Counter] = {}
+        self.first_fail: Dict[Union[int, str], float] = {}
+        self.last_fail: Dict[Union[int, str], float] = {}
+        self._pending: Counter = Counter()        # failures not yet in a log line
+        self._reported_at: Dict[Union[int, str], float] = {}
+        self._last_text: Dict[Union[int, str], str] = {}
+
+    def ok(self, bus) -> None:
+        self.sent[bus] += 1
+
+    def fail(self, bus, index: int, total: int, t_log: float, err) -> None:
+        """Count a failed send of frame ``index`` (0-based, of ``total``) at log time ``t_log`` s."""
+        text = str(err)
+        kinds = self.kinds.setdefault(bus, Counter())
+        new_kind = text not in kinds
+        kinds[text] += 1
+        self.failed[bus] += 1
+        self.first_fail.setdefault(bus, t_log)
+        self.last_fail[bus] = t_log
+        self._last_text[bus] = text
+        now = self._clock()
+        if new_kind:
+            self._log.warning(
+                "bus %s: send failed at frame %d of %d (t=%.3f s in the log): %s; "
+                "further failures on this bus are counted and reported every %g s",
+                bus, index + 1, total, t_log, text, self.report_every_s)
+            self._reported_at[bus] = now
+            return
+        self._pending[bus] += 1
+        if now - self._reported_at.get(bus, now) >= self.report_every_s:
+            self._report(bus, now)
+
+    def _report(self, bus, now) -> None:
+        self._log.warning("bus %s: %d more send failures (%d in all, last at t=%.3f s): %s",
+                          bus, self._pending[bus], self.failed[bus], self.last_fail[bus],
+                          self._last_text[bus])
+        self._pending[bus] = 0
+        self._reported_at[bus] = now
+
+    def flush(self) -> None:
+        """Log the failures not yet reported (call at the end of a pass)."""
+        now = self._clock()
+        for bus in [b for b, n in self._pending.items() if n]:
+            self._report(bus, now)
+
+    @property
+    def total_failed(self) -> int:
+        return sum(self.failed.values())
+
+    def summary_lines(self) -> List[str]:
+        """One line per bus that had a failure, for the replayer's summary."""
+        out = []
+        for bus in sorted(self.failed, key=lambda k: (isinstance(k, str), k)):
+            kinds = "; ".join(f"{n:,} x {t}" for t, n in self.kinds[bus].most_common())
+            out.append(f"{bus}: {self.sent[bus]:,} sent, {self.failed[bus]:,} failed "
+                       f"(t={self.first_fail[bus]:.3f}-{self.last_fail[bus]:.3f} s in the log): {kinds}")
+        return out
