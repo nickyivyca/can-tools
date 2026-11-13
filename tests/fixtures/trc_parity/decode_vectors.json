@@ -1,0 +1,1164 @@
+[
+ {
+  "name": "state_warning_with_prot",
+  "what": "gs_usb state change to warning, repeating the last error code (CRTL|PROT, counters without CNT)",
+  "frame": {
+   "class_bits": 12,
+   "data": [
+    0,
+    8,
+    1,
+    0,
+    0,
+    0,
+    97,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 0,
+   "tx_count": 97,
+   "state": "warning",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": 1,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     8
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     0,
+     97
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "state_passive_with_prot",
+  "what": "gs_usb state change to error passive with the last error code (CRTL|PROT)",
+  "frame": {
+   "class_bits": 12,
+   "data": [
+    0,
+    32,
+    130,
+    0,
+    0,
+    0,
+    128,
+    3
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 3,
+   "tx_count": 128,
+   "state": "passive",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": 2,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     4,
+     0,
+     0
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     3,
+     128
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "state_rx_passive_with_prot",
+  "what": "gs_usb state change, receive side passive",
+  "frame": {
+   "class_bits": 12,
+   "data": [
+    0,
+    16,
+    4,
+    0,
+    0,
+    0,
+    0,
+    130
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 130,
+   "tx_count": 0,
+   "state": "passive",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": 4,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     4,
+     0,
+     0
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     130,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "state_active_with_prot",
+  "what": "gs_usb back to error active, last error code repeated",
+  "frame": {
+   "class_bits": 12,
+   "data": [
+    0,
+    64,
+    8,
+    0,
+    0,
+    0,
+    90,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 0,
+   "tx_count": 90,
+   "state": "active",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": 1,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     0
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     0,
+     90
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "state_warning_no_prot",
+  "what": "state change to warning without a protocol code",
+  "frame": {
+   "class_bits": 4,
+   "data": [
+    0,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    96
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 96,
+   "tx_count": 0,
+   "state": "warning",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     8
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     96,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "state_active_no_prot_no_counters",
+  "what": "back to active, no code, zero counters without CNT (counters unknown)",
+  "frame": {
+   "class_bits": 4,
+   "data": [
+    0,
+    64,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": "active",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "busoff",
+  "what": "bus off (BUSOFF), counters with CNT",
+  "frame": {
+   "class_bits": 576,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    255,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 0,
+   "tx_count": 255,
+   "state": "busoff",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     16
+    ]
+   ],
+   [
+    "EC",
+    "Rx",
+    [
+     0,
+     255
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "restarted",
+  "what": "controller restarted after bus off",
+  "frame": {
+   "class_bits": 256,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": "restarted",
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_bit_rx",
+  "what": "bus error, bit error, received, in the identifier",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    1,
+    2,
+    0,
+    0,
+    8,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 1,
+   "direction": "rx",
+   "position": 2,
+   "rx_count": 0,
+   "tx_count": 8,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     1,
+     1,
+     2,
+     0,
+     8
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_bit0_tx",
+  "what": "bus error, bit0 (dominant expected), while transmitting, in data",
+  "frame": {
+   "class_bits": 648,
+   "data": [
+    0,
+    0,
+    136,
+    10,
+    0,
+    0,
+    16,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 1,
+   "direction": "tx",
+   "position": 10,
+   "rx_count": 0,
+   "tx_count": 16,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Tx",
+    [
+     1,
+     0,
+     10,
+     0,
+     16
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_bit1_tx",
+  "what": "bus error, bit1 (recessive expected), while transmitting",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    144,
+    10,
+    0,
+    0,
+    24,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 1,
+   "direction": "tx",
+   "position": 10,
+   "rx_count": 0,
+   "tx_count": 24,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Tx",
+    [
+     1,
+     0,
+     10,
+     0,
+     24
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_form_rx",
+  "what": "bus error, form error, at end of frame",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    2,
+    26,
+    0,
+    0,
+    0,
+    9
+   ]
+  },
+  "report": {
+   "error_type": 2,
+   "direction": "rx",
+   "position": 26,
+   "rx_count": 9,
+   "tx_count": 0,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     2,
+     1,
+     26,
+     9,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_stuff_rx",
+  "what": "bus error, stuff error, in data",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    4,
+    10,
+    0,
+    0,
+    0,
+    17
+   ]
+  },
+  "report": {
+   "error_type": 4,
+   "direction": "rx",
+   "position": 10,
+   "rx_count": 17,
+   "tx_count": 0,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     4,
+     1,
+     10,
+     17,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_crc_rx",
+  "what": "bus error, CRC sequence (type unspecified, location CRC)",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    0,
+    8,
+    0,
+    0,
+    0,
+    25
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": "rx",
+   "position": 8,
+   "rx_count": 25,
+   "tx_count": 0,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     8,
+     1,
+     8,
+     25,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserr_ack_slot_tx",
+  "what": "bus error in the ACK slot while transmitting (no ACK), as PROT",
+  "frame": {
+   "class_bits": 136,
+   "data": [
+    0,
+    0,
+    128,
+    25,
+    0,
+    0,
+    32,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": "tx",
+   "position": 25,
+   "rx_count": 0,
+   "tx_count": 32,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Tx",
+    [
+     8,
+     0,
+     25,
+     0,
+     32
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "prot_no_state_change",
+  "what": "PROT without BUSERROR and without a state change: still a bus error",
+  "frame": {
+   "class_bits": 8,
+   "data": [
+    0,
+    0,
+    4,
+    10,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 4,
+   "direction": "rx",
+   "position": 10,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     4,
+     1,
+     10,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "ack_class",
+  "what": "ACK class (no acknowledge received)",
+  "frame": {
+   "class_bits": 32,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": "tx",
+   "position": 25,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Tx",
+    [
+     8,
+     0,
+     25,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "buserror_alone",
+  "what": "BUSERROR with no PROT details",
+  "frame": {
+   "class_bits": 128,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     8,
+     1,
+     0,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "tx_timeout",
+  "what": "TX timeout",
+  "frame": {
+   "class_bits": 1,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": "tx",
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Tx",
+    [
+     8,
+     0,
+     0,
+     0,
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "counters_cnt",
+  "what": "counters only, with CNT",
+  "frame": {
+   "class_bits": 512,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    40,
+    12
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": 12,
+   "tx_count": 40,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "EC",
+    "Rx",
+    [
+     12,
+     40
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "no_class_with_counters",
+  "what": "no class bits, counters in bytes 6/7 without CNT: an error frame with no known class is a bus error (ER, type other)",
+  "frame": {
+   "class_bits": 0,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    5,
+    7
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": null,
+   "position": null,
+   "rx_count": 7,
+   "tx_count": 5,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     8,
+     1,
+     0,
+     7,
+     5
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "rx_overflow",
+  "what": "receive overflow (CRTL, RX_OVERFLOW)",
+  "frame": {
+   "class_bits": 4,
+   "data": [
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": true,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ST",
+    "Rx",
+    [
+     0,
+     0,
+     0,
+     2
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "tx_overflow",
+  "what": "transmit overflow (CRTL, TX_OVERFLOW)",
+  "frame": {
+   "class_bits": 4,
+   "data": [
+    0,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": true,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": []
+ },
+ {
+  "name": "lost_arbitration",
+  "what": "lost arbitration at bit 11",
+  "frame": {
+   "class_bits": 2,
+   "data": [
+    11,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": null,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": 11,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": []
+ },
+ {
+  "name": "no_class",
+  "what": "an error frame with no class bits and zero data",
+  "frame": {
+   "class_bits": 0,
+   "data": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "report": {
+   "error_type": 8,
+   "direction": null,
+   "position": null,
+   "rx_count": null,
+   "tx_count": null,
+   "state": null,
+   "rx_overflow": false,
+   "tx_overflow": false,
+   "lost_arbitration_bit": null,
+   "last_error_type": null,
+   "raw_backend": "",
+   "raw_id": 0,
+   "raw_data": [],
+   "raw_note": ""
+  },
+  "trc_records": [
+   [
+    "ER",
+    "Rx",
+    [
+     8,
+     1,
+     0,
+     0,
+     0
+    ]
+   ]
+  ]
+ }
+]

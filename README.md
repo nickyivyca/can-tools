@@ -119,14 +119,16 @@ canbench/
                  behind python-can's "pcan" / "kvaser" names (Linux-layout error reports, PCAN bus-off reset)
   live/clock.py  frame timestamps: the adapter's clock on the wall clock (drift, wrap)
   errors.py      the canonical error record: Linux error-frame decoding, PCAN / Kvaser translations, TRC records
-  trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames
+  trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames; $STARTTIME UTC,
+                 plus `Start time (UTC)` / `Start time (local)` comment lines (owner ruling 2026-11-13)
   logio.py       log read/write: content-detected reading, candump writing (.trc: trcwriter)
   replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent; per-bus send failures (SendStats), the wait on a full SocketCAN queue (send_waiting, ENOBUFS)
   parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.0-2.1, ASC, SavvyCAN); parsers.md
   gui/           PyQt logger GUI                          (Phase 2)
   passthrough.py two-dongle bridge                        (Phase 2)
   profiles.py    vehicle-profile .ini loader              (Phase 2)
-tools/           CLI entry points
+tools/           CLI entry points; trc_parity_fixtures.py writes tests/fixtures/trc_parity
+                 (synthetic error-decoding and TRC vectors for other implementations, e.g. the Android loggers)
 packaging/       PyInstaller onedir build                 (Phase 2)
 tests/           virtual/udp-bus tests, no hardware       (Phase 2)
 ```
