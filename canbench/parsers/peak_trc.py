@@ -55,9 +55,11 @@ _OLE_TO_UNIX_DAYS = 25569
 def start_time(path: Path | str) -> float | None:
     """Unix time of the trace start from ;$STARTTIME, or None if absent.
 
-    The header is the recorder's local wall-clock time; like
-    canbench.logio.busmaster_start it is treated as UTC, so deltas are exact
-    and the absolute value is off by the recorder's UTC offset.
+    The value is taken as UTC. That is right for the files canbench and the
+    Android loggers write (owner ruling 2026-11-13: $STARTTIME is UTC; such a
+    file also has a "Start time (local)" comment, see :func:`start_local`).
+    PEAK's recorders write local time there (their spec), so for a PEAK file the
+    absolute value is off by the recorder's UTC offset; deltas are exact either way.
     """
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -67,6 +69,32 @@ def start_time(path: Path | str) -> float | None:
             m = _STARTTIME_RE.match(s)
             if m:
                 return (float(m.group(1)) - _OLE_TO_UNIX_DAYS) * 86400.0
+    return None
+
+
+_START_LOCAL_RE = re.compile(r"^;\s*Start time \(local\):\s*(\S+)(?:\s+(\S+))?\s*$")
+
+
+def start_local(path: Path | str):
+    """``(datetime with its UTC offset, IANA zone name or None)`` from the header's
+    ``;   Start time (local): 2026-11-13T08:54:10.697-08:00 America/Los_Angeles`` line,
+    which canbench's TRC writer and the Android loggers write (2026-11-13); None if
+    the file has none (a PEAK-written file, or an older canbench one) or it does not parse."""
+    from datetime import datetime
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            s = line.strip()
+            if s and not s.startswith(";"):
+                return None
+            m = _START_LOCAL_RE.match(s)
+            if m:
+                try:
+                    when = datetime.fromisoformat(m.group(1))
+                except ValueError:
+                    return None
+                if when.utcoffset() is None:
+                    return None
+                return when, m.group(2)
     return None
 
 

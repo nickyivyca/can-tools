@@ -281,7 +281,11 @@ Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True`
 
 #### `start_time(path) -> float | None` (module function)
 
-Unix time of `;$STARTTIME` (days since 1899-12-30). The header is the recorder's local time and is treated as UTC, as `canbench.logio.busmaster_start` does, so deltas are exact.
+Unix time of `;$STARTTIME` (days since 1899-12-30), taken as UTC. **Owner ruling 2026-11-13: `$STARTTIME` is UTC** in the files canbench's `TRCWriter` and the Android loggers write, so for those it is the true epoch. PEAK's recorders write local time there (their spec), so for a PEAK file the absolute value is off by the recorder's UTC offset; deltas are exact either way.
+
+#### `start_local(path) -> (datetime, zone or None) | None` (module function)
+
+The header's `;   Start time (local): 2026-11-13T08:14:10.697-08:00 America/Los_Angeles` line (ISO 8601 with its UTC offset, then the IANA zone name when known), which canbench's `TRCWriter` and the Android loggers write beside `;   Start time (UTC): ...` (2026-11-13). Returns the offset-aware datetime and the zone name, or None when the file has no such line (a PEAK-written file, or a canbench file from before 2026-11-13). A file that has it carries a UTC `$STARTTIME`.
 
 **PCAN-Basic 5.0 writes a wrong `$STARTTIME`** (measured 2026-10-31, reverse-it `tools/plans/can-replay-readers.md` step 6c): the TRC 1.1 traces written by PCAN-Basic 5.0.0.1115's trace feature on Windows, on a machine at UTC-7, carry `$STARTTIME` = local time minus 7 h (UTC minus 14 h), in whole seconds, while the same file's `Start time:` comment line has the right local time to the millisecond. PEAK's spec makes the two the same instant. This reader follows the spec and does not cross-check the comment, so `start_time()` and `absolute=True` are 14 h off for such files; relative times are unaffected. Take the start from the `Start time:` line by hand if one of these traces needs absolute time. The FD-channel TRC 2.0 traces from the same version are off the same way. PCAN-Basic 5.0.1 (2026-03-31) lists the fix "The conversion of the STARTTIME value in generated PCAN trace files did not take time zones into account"; that is likely this bug, unconfirmed until a 5.0.1 trace is read.
 
