@@ -149,6 +149,9 @@ def skipped_summary(load):
 
 
 def main():
+    # canbench's PCAN/Kvaser classes: Linux-layout error reports, PCAN bus-off recovery
+    from canbench.live import backends
+    backends.install()
     parser = argparse.ArgumentParser(
         description='CAN log replayer - transmit a captured log through connected hardware'
     )

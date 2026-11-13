@@ -30,6 +30,7 @@ import can
 from canbench import parsers
 from canbench.parsers.busmaster import BusmasterParser
 from canbench.parsers.savvycan import SavvyCANParser
+from canbench.trcwriter import TRCWriter
 
 DEFAULT_SUFFIX = ".log"
 
@@ -66,7 +67,16 @@ def open_writer(path, append=False):
     Feed it messages with ``writer(msg)`` or ``writer.on_message_received(msg)``
     and close it with ``writer.stop()`` (or use it as a context manager). Dispatch
     is by extension, so a ``.log`` path yields the candump/SocketCAN writer.
+
+    A ``.trc`` path yields canbench's own TRC 2.1 writer
+    (``canbench.trcwriter``), which keeps error frames as ``ER`` / ``ST`` /
+    ``EC`` records with the adapter's own report beside them; python-can's
+    writer drops error, remote and CAN FD frames. TRC cannot append.
     """
+    if Path(path).suffix.lower() == ".trc":
+        if append:
+            raise ValueError("a TRC file cannot be appended to")
+        return TRCWriter(str(path))
     return can.Logger(str(path), append=append)
 
 
@@ -114,6 +124,7 @@ def read_messages(path, include_errors=False):
     BUSMASTER and SavvyCAN CSV are read by ``canbench.parsers``; candump, ASC,
     BLF, CSV and TRC by python-can (by extension). ``msg.channel`` carries the
     bus label (``canN``), never a bus identity: identify buses by content.
+    A TRC file's bus N is read as ``can{N-1}``, the label it was written from.
 
     Timestamps: python-can formats give absolute epoch seconds. BUSMASTER gives
     the header start (see :func:`busmaster_start`) plus each frame's offset from
@@ -127,8 +138,13 @@ def read_messages(path, include_errors=False):
     """
     parser = detect_reader(path)
     if parser is None:
+        # TRC bus numbers start at 1 (python-can and canbench write can0 as
+        # bus 1); python-can's reader hands the bus number back unchanged.
+        trc = Path(path).suffix.lower() == ".trc"
         with can.LogReader(str(path)) as reader:
             for msg in reader:
+                if trc and isinstance(msg.channel, int):
+                    msg.channel = bus_channel(max(msg.channel - 1, 0))
                 yield msg
         return
     base = 0.0

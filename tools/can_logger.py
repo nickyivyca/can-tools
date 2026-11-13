@@ -96,6 +96,9 @@ def run_passthrough(interfaces, output_path, bitrate):
 
 
 def main():
+    # canbench's PCAN/Kvaser classes: Linux-layout error reports, PCAN bus-off recovery
+    from canbench.live import backends
+    backends.install()
     parser = argparse.ArgumentParser(
         description='Multi-device CAN logger with candump / SocketCAN output'
     )

@@ -1,6 +1,6 @@
 # PCAN bus-off / no-ACK recovery
 
-*Last updated: 2026-07-20*
+*Last updated: 2026-11-12*
 
 Notes on a PCAN failure mode that looks like broken hardware but isn't, and
 the python-can knobs that make it recoverable. Applies to any tool that opens a
@@ -61,6 +61,26 @@ errors once the vehicle was awake.
 | `Bus(..., auto_reset=True)` | Sets `PCAN_BUSOFF_AUTORESET` -> driver auto-recovers from bus-off. **The actual fix for the latch.** |
 | `bus.reset()` | `PCANBasic.Reset()` -- flushes TX/RX queues and clears post-error state. Good to call once at startup. |
 | `bus.status_is_ok()` / `bus.status_string` | Query controller state so a tool can fail loudly instead of hanging. |
+
+**On Linux `auto_reset` is not enough by itself (2026-11-12, jammer bench on
+madhouse).** Two things in PCAN-Basic for Linux 9.3.3:
+
+1. `PCANBasic.Reset` (and the library's own bus-off reset) only flushes the
+   queues unless the channel's `PCAN_HARD_RESET_STATUS` (0x2E) is on; only then
+   does it reset the controller (`pcanbasic_reset`: `PCANFD_RESET_ALL`). With it
+   off, the PCAN stayed bus-off for the rest of a run, through 124 resets.
+   With it on, `auto_reset=True` recovered the PCAN 299 times in a 3 s error
+   train with no failed sends.
+2. The library's write-path auto-reset never fires: it compares PCAN-Basic's
+   `PCAN_ERROR_BUSOFF` (0x10) with the driver's `PCANFD_ERROR_BUSOFF` (4). Only
+   the read path resets, so a channel that only transmits is not recovered.
+
+The tools' own PCAN class (`canbench/live/pcan_bus.py`, installed by
+`canbench.live.backends.install()`) turns `PCAN_HARD_RESET_STATUS` on at open,
+and after a failed send or a bus-off report checks the status and resets the
+channel itself, reporting it as a `CAN_ERR_RESTARTED` error frame. With the
+library's auto-reset off, that alone recovered the PCAN 29 times in the same
+train, back to error-active as the train ended.
 
 `auto_reset` is a pcan-only kwarg; pass it only when `interface == "pcan"` (ixxat
 / kvaser / gs_usb / socketcan do not accept it).

@@ -35,6 +35,21 @@ python-can has no reader for either. A BUSMASTER `.log` is therefore no longer
 mistaken for candump. The replayer loads through `canbench.replay`, which also
 reads PEAK TRC with its error and status records.
 
+**Error frames, one layout for every adapter.** Adapters report bus errors in
+their own styles. canbench carries them all as Linux `can/error.h` error
+frames: SocketCAN and gs_usb already give that layout, and the tools'
+PCAN and Kvaser classes (`canbench.live.pcan_bus`, `canbench.live.kvaser_bus`,
+selected by `canbench.live.backends.install()`, which `can_logger`,
+`can_replayer` and `can_gui` call) translate theirs, keeping the adapter's own
+id and bytes on the message. `canbench.errors` decodes the layout into one
+record, and `can_logger -o x.trc` writes TRC 2.1 with each error as PEAK's
+`ER` / `ST` / `EC` records plus an `EV` line holding what the adapter itself
+reported (python-can's TRC writer drops error, remote and CAN FD frames). The
+PCAN class also turns on PCAN-Basic's hard reset (without it a reset does not
+clear bus-off on Linux) and resets the channel itself after bus-off, because
+PCAN-Basic for Linux's auto-reset does not fire on a failed send
+(`canbench/live/pcan-busoff-recovery.md`).
+
 ## Requirements
 
 ```
@@ -99,7 +114,11 @@ canbench/
                  linux_fixes.apply()): python-can's Kvaser backend on linuxcan (SET_LOCAL_TXACK needs a
                  4-byte buffer) and gs_usb's start() without the USB reset that makes an Innomaker
                  re-enumerate. Hand an Innomaker back to the kernel in-process only after release_gs_usb().
-  logio.py       log read/write: content-detected reading, candump writing
+                 backends.py: install() puts pcan_bus.CanbenchPcanBus and kvaser_bus.CanbenchKvaserBus
+                 behind python-can's "pcan" / "kvaser" names (Linux-layout error reports, PCAN bus-off reset)
+  errors.py      the canonical error record: Linux error-frame decoding, PCAN / Kvaser translations, TRC records
+  trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames
+  logio.py       log read/write: content-detected reading, candump writing (.trc: trcwriter)
   replay.py      loading a capture for replay: _T chunks, buses by anchors, what is not sent
   parsers/       stdlib log readers (BUSMASTER, candump, TRC 1.0-2.1, ASC, SavvyCAN); parsers.md
   gui/           PyQt logger GUI                          (Phase 2)

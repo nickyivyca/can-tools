@@ -41,6 +41,9 @@ def _check():
 
 
 def main():
+    # canbench's PCAN/Kvaser classes: Linux-layout error reports, PCAN bus-off recovery
+    from canbench.live import backends
+    backends.install()
     ap = argparse.ArgumentParser(description="canbench desktop CAN logger")
     ap.add_argument("--virtual", action="store_true",
                     help="show the in-process virtual bus in the interface list (for testing)")
