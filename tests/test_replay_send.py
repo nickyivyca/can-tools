@@ -190,6 +190,7 @@ def test_replay_once_waits_on_a_full_queue_and_sends_late():
     frames = _frames([(i * 0.001, "d_can") for i in range(10)])
     tx = rp.replay_once(frames, {"d_can": bus}, 0, threading.Event(), stats, 0.1)
     assert tx == 10 and len(bus.sent) == 10 and stats.total_failed == 0 and log.lines == []
+    assert not stats.stalled_at
     assert stats.waited == {"d_can": 1}
     assert stats.wait_lines()[0].startswith("d_can: 1 frames waited, longest "), stats.wait_lines()
 
@@ -200,7 +201,7 @@ def test_replay_once_with_no_wait_keeps_the_old_count():
     bus = _FullBus(full_on={3})
     frames = _frames([(i * 0.001, "d_can") for i in range(10)])
     assert rp.replay_once(frames, {"d_can": bus}, 0, threading.Event(), stats, 0) == 9
-    assert stats.failed == {"d_can": 1} and not stats.waited
+    assert stats.failed == {"d_can": 1} and not stats.waited and not stats.stalled_at   # no wait, no stall verdict
 
 
 def test_replay_once_stops_waiting_on_a_stuck_bus_until_a_send_goes_out():
@@ -210,6 +211,8 @@ def test_replay_once_stops_waiting_on_a_stuck_bus_until_a_send_goes_out():
     frames = _frames([(i * 0.001, "b_can") for i in range(50)])
     tx = rp.replay_once(frames, {"b_can": bus}, 0, threading.Event(), stats, 0.02)
     assert tx == 0 and stats.failed == {"b_can": 50}
+    assert list(stats.stalled_at) == ["b_can"] and stats.stalled_at["b_can"] == 0.0
+    assert "transmit queue stayed full from t=0.000 s" in stats.stall_lines()[0], stats.stall_lines()
     first_wait = bus.attempts - 49                  # every later frame is tried once
     assert 3 < first_wait < 20, bus.attempts        # only the first frame waited (~7 tries in 20 ms)
 

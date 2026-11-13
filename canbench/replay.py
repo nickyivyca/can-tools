@@ -321,9 +321,23 @@ class SendStats:
         self._last_text: Dict[Union[int, str], str] = {}
         self.waited: Counter = Counter()          # frames sent after waiting on a full queue
         self.wait_max: Dict[Union[int, str], float] = {}
+        self.stalled_at: Dict[Union[int, str], float] = {}   # log time a bus's queue first stayed full past the wait
 
     def ok(self, bus) -> None:
         self.sent[bus] += 1
+
+    def stalled(self, bus, t_log: float) -> None:
+        """Record that ``bus``'s transmit queue stayed full past the whole wait at log time ``t_log``."""
+        self.stalled_at.setdefault(bus, t_log)
+
+    def stall_lines(self) -> List[str]:
+        """One line per bus whose transmit queue stayed full past the wait: the adapter stopped completing
+        transmissions (2026-11-13: a Kvaser on kvaser_usb did this with no kernel message and its link still
+        ERROR-ACTIVE, and the summary showed only ENOBUFS counts)."""
+        return [f"{bus}: transmit queue stayed full from t={self.stalled_at[bus]:.3f} s in the log: the adapter "
+                f"stopped completing transmissions (no ACK on its bus, or the adapter or its USB link stopped); "
+                f"check its link state and the kernel log, and reset it before the next run"
+                for bus in sorted(self.stalled_at, key=lambda k: (isinstance(k, str), k))]
 
     def waited_for(self, bus, seconds: float) -> None:
         """Count a frame that went out after ``seconds`` waiting on a full transmit queue."""

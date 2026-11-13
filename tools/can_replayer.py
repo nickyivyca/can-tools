@@ -163,6 +163,7 @@ def replay_once(frames, channel_map, speed, abort_event, stats=None, enobufs_wai
         except can.CanError as e:
             if wait_s > 0 and replay.queue_full(e):
                 stuck.add(frame.channel)
+                stats.stalled(frame.channel, frame.timestamp - log_start_ts)
             stats.fail(frame.channel, index, total, frame.timestamp - log_start_ts, e)
 
     stats.flush()
@@ -433,6 +434,10 @@ def main():
     if stats.total_failed:
         print("Send failures by bus:")
         for line in stats.summary_lines():
+            print(f"  {line}")
+    if stats.stalled_at:
+        print("Stalled:")
+        for line in stats.stall_lines():
             print(f"  {line}")
     if stats.waited:
         print(f"Waited on a full transmit queue (sent, up to {args.enobufs_wait_ms:g} ms each):")
