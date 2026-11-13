@@ -114,7 +114,11 @@ class FrameClock:
         return out
 
     def stamp(self, msg, host_ts: float | None = None):
-        """Set ``msg.timestamp`` to its wall-clock time; returns the message."""
+        """Set ``msg.timestamp`` to its wall-clock time; returns the message. A message marked
+        ``host_stamped`` (a report canbench made from a host-side read, e.g. a polled Kvaser
+        state) already carries host time: it is kept and does not feed the mapping."""
+        if getattr(msg, "host_stamped", False):
+            return msg
         msg.timestamp = self.wall(msg.timestamp, time.time() if host_ts is None else host_ts)
         return msg
 

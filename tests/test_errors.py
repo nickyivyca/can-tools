@@ -334,7 +334,7 @@ def test_kvaser_state_reported_on_change_only():
     from canbench.live.kvaser_bus import CanbenchKvaserBus
 
     bus = CanbenchKvaserBus.__new__(CanbenchKvaserBus)
-    bus._last_state = None
+    bus._last_state, bus._pending, bus.status_poll_s, bus._next_poll = None, [], None, 0.0
     states = iter([(E.canSTAT_ERROR_ACTIVE, 8, 0), (E.canSTAT_ERROR_ACTIVE, 16, 0),
                    (E.canSTAT_ERROR_PASSIVE, 128, 0)])
     bus._read_state = lambda: next(states)
@@ -358,7 +358,7 @@ def test_kvaser_zero_counters_are_unknown():
     from can.interfaces.kvaser.canlib import KvaserBus
 
     bus = CanbenchKvaserBus.__new__(CanbenchKvaserBus)
-    bus._last_state = None
+    bus._last_state, bus._pending, bus.status_poll_s, bus._next_poll = None, [], None, 0.0
     bus._read_state = lambda: (E.canSTAT_ERROR_PASSIVE, 0, 0)
     saved = KvaserBus._recv_internal
     KvaserBus._recv_internal = lambda self, timeout: (
@@ -370,6 +370,40 @@ def test_kvaser_zero_counters_are_unknown():
     r = E.decode(m)
     assert r.state == "passive" and r.tx_count is None and r.rx_count is None
     assert "tx=0 rx=0" in m.raw_note
+
+
+def test_kvaser_polled_return_to_active_without_error_frame():
+    from canbench.live.kvaser_bus import CanbenchKvaserBus
+    from canbench.live.clock import FrameClock
+    from can.interfaces.kvaser.canlib import KvaserBus
+
+    bus = CanbenchKvaserBus.__new__(CanbenchKvaserBus)
+    bus._last_state, bus._pending, bus.status_poll_s, bus._next_poll = None, [], 0.0, 0.0
+    bus.channel_info = "kvaser test"
+    # polling every call: call 1 polls the baseline; call 2 completes an error frame (one read) and
+    # polls (unchanged); call 3 has no frame and polls a return to active
+    reads = iter([(E.canSTAT_ERROR_ACTIVE, None, None),
+                  (E.canSTAT_ERROR_PASSIVE, 0, 0),
+                  (E.canSTAT_ERROR_PASSIVE, None, None),
+                  (E.canSTAT_ERROR_ACTIVE, None, None)])
+    bus._read_state = lambda: next(reads)
+    incoming = iter([None, can.Message(arbitration_id=0, is_error_frame=True, data=bytes(4), dlc=4), None])
+    saved = KvaserBus._recv_internal
+    KvaserBus._recv_internal = lambda self, timeout: (next(incoming), False)
+    try:
+        out = [bus._recv_internal(0)[0] for _ in range(3)]
+    finally:
+        KvaserBus._recv_internal = saved
+    assert out[0] is None
+    assert E.decode(out[1]).state == "passive" and E.decode(out[1]).error_type == 8
+    r = E.decode(out[2])
+    assert r.state == "active" and r.error_type is None and "polled" in out[2].raw_note
+    assert E.trc_records(r) == [("ST", "Rx", bytes(4))]
+    # a polled report carries host time and must not feed the device-clock mapping
+    c = FrameClock("kvaser")
+    t = out[2].timestamp
+    c.stamp(out[2])
+    assert out[2].timestamp == t and c.n == 0
 
 
 def test_backends_install_and_uninstall():

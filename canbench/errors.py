@@ -290,13 +290,15 @@ canSTAT_HW_OVERRUN = 0x200
 canSTAT_SW_OVERRUN = 0x400
 
 
-def from_kvaser(status: int | None, tx: int | None, rx: int | None, **kw) -> ErrorMessage:
+def from_kvaser(status: int | None, tx: int | None, rx: int | None, *, bus_error: bool = True,
+                **kw) -> ErrorMessage:
     """A canlib error frame, completed with the channel's status flags and
     error counters read when it arrived (None if the read failed). canlib's
     error frame says a bus error happened and nothing more, so the type is
-    "other" with no direction or position."""
+    "other" with no direction or position. ``bus_error=False`` makes a
+    state-only report (a polled state change with no error frame)."""
     d = bytearray(8)
-    cls = CAN_ERR_BUSERROR
+    cls = CAN_ERR_BUSERROR if bus_error else 0
     if status is not None:
         cls |= CAN_ERR_CRTL
         if status & canSTAT_BUS_OFF:

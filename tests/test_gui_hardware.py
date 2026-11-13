@@ -62,7 +62,7 @@ def test_gui_owns_only_checked_dongle():
         # This open would raise if the GUI had claimed the Innomaker -> ownership proof
         tx = buses.open_bus("gs_usb", gs_ch, BR)
         for i in range(12):
-            tx.send(can.Message(arbitration_id=0x350 + i, data=bytes([i, 0x5A]), is_extended_id=False))
+            tx.send(can.Message(arbitration_id=0x7A0 + i, data=bytes([i, 0x5A]), is_extended_id=False))
             time.sleep(0.02)
         time.sleep(0.5)
 
