@@ -91,6 +91,19 @@ def trc_start(path: Path | str) -> CaptureStart | None:
                         "TRC $STARTTIME (canbench convention: UTC)")
 
 
+def first_offset(path: Path | str) -> float | None:
+    """Seconds from ``$STARTTIME`` to the first data line (frame or event), the line
+    :meth:`PeakTrcParser.parse_file` makes t=0 by default; None if the file has none. So a
+    record's instant is the start's instant plus ``first_offset`` plus its timestamp."""
+    parser = PeakTrcParser()
+    records = parser.parse_file(path, include_events=True)
+    try:
+        next(records, None)
+    finally:
+        records.close()
+    return parser.origin_offset
+
+
 def start_time(path: Path | str) -> float | None:
     """Seconds of the trace start from ;$STARTTIME, or None if absent:
     ``trc_start(path).seconds``.
@@ -199,6 +212,7 @@ class PeakTrcParser(BaseParser):
         id_set, clock_set = id_filter_sets(ids, clock_ids)
         pre_cols = None           # (type index, id index) for the 2.x prefilter
         self.skipped = Counter()
+        self.origin_offset = None   # seconds from $STARTTIME to the line that is t=0 (relative mode)
         version = "1.0"           # a file without $FILEVERSION is 1.0
         columns: list[str] | None = None
         day_seconds = 0.0
@@ -264,6 +278,7 @@ class PeakTrcParser(BaseParser):
                 else:
                     if t_origin is None:
                         t_origin = offset
+                        self.origin_offset = offset
                     timestamp = offset - t_origin
 
                 if kind == "frame":

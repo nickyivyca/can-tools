@@ -19,7 +19,7 @@ import can
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canbench import logio  # noqa: E402
-from canbench.parsers.peak_trc import start_local, start_time  # noqa: E402
+from canbench.parsers.peak_trc import first_offset, start_local, start_time  # noqa: E402
 from canbench.trcwriter import TRCWriter  # noqa: E402
 
 LA = ZoneInfo("America/Los_Angeles")
@@ -130,6 +130,16 @@ def test_peak_trc_is_local():
     assert st.seconds == (45000.25 - 25569) * 86400.0 == start_time(p)
     # 2023-03-15 is PDT (UTC-7)
     assert st.instant_ns(LA) == calendar.timegm((2023, 3, 15, 13, 0, 0)) * 10**9
+
+
+def test_trc_first_offset():
+    p = _write(PEAK_TRC.replace("       1       100.000 DT 1     0308 Rx - 2    01 02\n",
+                                "       1       100.000 ER 1        - Rx - 5    04 01 0A 00 00\n"
+                                "       2       102.500 DT 1     0308 Rx - 2    01 02\n"), "t.trc")
+    assert first_offset(p) == 0.1                     # the ER line is t=0, as in parse_file
+    from canbench.parsers import parse_file
+    assert [round(f.timestamp, 6) for f in parse_file(p)] == [0.0025]
+    assert first_offset(_write(PEAK_TRC.split("       1 ")[0], "e.trc")) is None
 
 
 def test_candump_first_frame_is_utc():

@@ -289,7 +289,7 @@ The first data line's `(epoch)` in the first 64 lines, as a `utc` start. `second
 ---
 
 ## peak_trc.py — PEAK PCAN TRC Parser
-*Source last modified: 2026-11-13 13:45:16*
+*Source last modified: 2026-11-13 14:13:34*
 
 Parser for PEAK PCAN Trace (`.trc`) log files, versions 1.0 to 2.1, written against PEAK-System's "PEAK CAN TRC File Format" (edition 2025-08-04). Version 3.0 files are read for their CAN and CAN FD lines. The version comes from `;$FILEVERSION=`; a file without it is 1.0.
 
@@ -328,6 +328,10 @@ Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True`
 #### `start(path)` / `trc_start(path) -> CaptureStart | None` (module function)
 
 `;$STARTTIME` (days since 1899-12-30) as a start; None if the header has none. **Basis `utc`** when the header has a `;   Start time (local):` comment: canbench's `TRCWriter` and the Android loggers write it, and their `$STARTTIME` is UTC (owner ruling 2026-11-13); the comment's IANA zone name, when given, is the start's `zone`. **Otherwise `local`**: PEAK's recorders write the recording machine's local time (their spec). `seconds` is `(days - 25569) * 86400` either way.
+
+#### `first_offset(path) -> float | None` (module function)
+
+Seconds from `$STARTTIME` to the first data line (frame or event): the line `parse_file` makes t=0 by default. So a record's instant is the start's instant plus `first_offset` plus its timestamp. None if the file has no data line. After a pass, `PeakTrcParser.origin_offset` holds the same value (None in absolute mode or before the first line). Added 2026-11-13 for reverse-it `canre.utils.timebase.trc_anchor_ns`.
 
 #### `start_time(path) -> float | None` (module function)
 
