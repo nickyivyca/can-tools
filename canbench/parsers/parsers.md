@@ -24,6 +24,18 @@ Non-frame lines (error frames, controller status, error counters, user events) c
 `CANEvent` records only when asked for, `parse_file(path, include_events=True)`, interleaved
 with the frames in file order; test with `isinstance(rec, CANFrame)`.
 
+**Reading only some ids (BUSMASTER and PEAK TRC, 2026-11-13):** `parse_file(path, ids={...})`
+yields only frames of those ids, exactly as if the file had first been filtered down to
+them: other ids and non-frame lines never take part in the time origin or the BUSMASTER
+midnight rollover, and no events are yielded. `clock_ids` (a subset, default `ids`) names
+the frames that define the time base; a kept frame of another id is stamped on it, and
+dropped if it comes before the first clock frame. Use it to read a fast or optional signal
+on the time base of the frames an analysis already uses, without letting it move them.
+Each reader pre-tests a line cheaply (BUSMASTER: the text ` 0x<id> `; TRC 2.x: the type and
+id columns) before the full parse, which is the point of passing `ids` on large files.
+Other formats raise `NotImplementedError`. Contract: `canbench.parsers.base.id_filter_sets`;
+tests: `tests/test_parsers_id_filter.py`.
+
 > **Staleness check:** Each section shows a `Source last modified` timestamp. If the `.py` file's mtime is newer than the timestamp shown here, re-read the source before relying on this documentation. Timestamps MUST include both date and time (`YYYY-MM-DD HH:MM:SS`).
 
 ## COMMON MISTAKES
@@ -42,7 +54,7 @@ dongle insertion order. Identify buses by content.
 Every `parse_file` yields frames; none returns a list. A second pass over the same result sees **nothing**, with no error. The usual trap is a bus-identification pass followed by an analysis pass: the second one comes back empty and reads as "the ID is absent". If you need more than one pass, materialise it first: `frames = list(parse_file(path))`. Found 2026-10-26, when an HVAC scratchpad reported every ID, its bus anchors included, as missing from all 20 captures.
 
 ## base.py — Core Data Types
-*Source last modified: 2026-10-31 15:33:37*
+*Source last modified: 2026-11-13 11:46:18*
 
 ### `CANFrame` dataclass
 
@@ -122,7 +134,7 @@ no counters. A writer should follow the spec (2 bytes).
 ---
 
 ## busmaster.py — BUSMASTER `.log` Parser
-*Source last modified: 2026-10-30 18:17:26*
+*Source last modified: 2026-11-13 11:46:18*
 
 **Changed 2026-10-28 — error-frame (`ERR`) lines.** The Android logger now writes the
 adapter's CAN error frames as `HH:MM:SS:TTTT Rx <ch> 0x<class mask> ERR <dlc> <bytes>`
@@ -187,7 +199,9 @@ Inherits from `BaseParser`.
 
 Returns `True` if any sample line matches `***BUSMASTER` or `***PROTOCOL CAN***` (case-insensitive).
 
-#### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False) -> Iterator[CANFrame | CANEvent]`
+#### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False, ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]`
+
+`ids` / `clock_ids`: see *Reading only some ids* at the top. With `ids`, `ERR` lines are skipped even if `include_events` / `include_errors` is set, and a non-clock frame applies the rollover test to itself against the last clock frame without changing the time base.
 
 Streams through a BUSMASTER log, yielding one `CANFrame` per data line. Skips header/metadata lines (those starting with `***`), and `ERR` error-frame lines unless asked for: `include_events=True` yields them as `CANEvent(kind="ERR")`, the form every parser uses for non-frame lines; `include_errors=True` yields them as `CANFrame(is_error=True)`, the older form kept for existing callers (see the 2026-10-28 note above). `include_events` wins if both are given.
 
@@ -245,7 +259,7 @@ Returns `True` if at least 2 non-comment lines match the candump pattern `(times
 ---
 
 ## peak_trc.py — PEAK PCAN TRC Parser
-*Source last modified: 2026-10-31 01:04:19*
+*Source last modified: 2026-11-13 11:45:00*
 
 Parser for PEAK PCAN Trace (`.trc`) log files, versions 1.0 to 2.1, written against PEAK-System's "PEAK CAN TRC File Format" (edition 2025-08-04). Version 3.0 files are read for their CAN and CAN FD lines. The version comes from `;$FILEVERSION=`; a file without it is 1.0.
 
@@ -267,7 +281,9 @@ Inherits from `BaseParser`.
 
 Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True` if the sample has both `;`-prefixed headers and numbered data lines.
 
-#### `parse_file(path, *, absolute: bool = False, include_events: bool = False) -> Iterator[CANFrame | CANEvent]`
+#### `parse_file(path, *, absolute: bool = False, include_events: bool = False, ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]`
+
+`ids` / `clock_ids`: see *Reading only some ids* at the top; there is no rollover in TRC (offsets are milliseconds from the trace start). Lines the id prefilter drops are not counted in `skipped`.
 
 **Timestamps:** the time offset is in **milliseconds** in every version. Default: the first data line of any kind (frame or event) is t=0, so times do not depend on `include_events`. `absolute=True`: seconds from midnight of `;$STARTTIME` plus the offset, like BUSMASTER's absolute mode.
 
@@ -386,7 +402,7 @@ Marking never drops a frame; a caller that wants the reports out filters on `fra
 ---
 
 ## autodetect.py — Format Auto-Detection & Convenience Entry Point
-*Source last modified: 2026-10-31 01:04:19*
+*Source last modified: 2026-11-13 11:45:00*
 
 Automatic format detection and the primary public entry point for all log parsing.
 
@@ -400,7 +416,9 @@ Reads the first ~20 non-empty lines and tries each parser's `detect()` in priori
 
 Returns the first matching parser instance. Raises `ValueError` if none match.
 
-### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False, mark_inferred_errors: bool = False) -> Iterator[CANFrame | CANEvent]`
+### `parse_file(path, *, absolute: bool = False, include_errors: bool = False, include_events: bool = False, mark_inferred_errors: bool = False, ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]`
+
+`ids` / `clock_ids` are passed to the BUSMASTER and PEAK TRC readers (see *Reading only some ids* at the top); any other detected format raises `NotImplementedError`.
 
 One-step convenience: detects format, then delegates to the matched parser's `parse_file`. `include_errors` is passed only to the BUSMASTER parser. `include_events` is passed to the BUSMASTER and TRC parsers; the other formats have no non-frame lines here. `mark_inferred_errors` applies the `inferred_errors.py` rule (BUSMASTER only; it reads the file twice).
 

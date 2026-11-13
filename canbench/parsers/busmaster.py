@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANEvent, CANFrame
+from .base import BaseParser, CANEvent, CANFrame, id_filter_sets
 
 # Matches a BUSMASTER data line (not a header/metadata line).
 # Groups: timestamp, tx/rx, channel, id, type, dlc, remaining data bytes
@@ -239,7 +239,8 @@ class BusmasterParser(BaseParser):
 
     def parse_file(self, path: Path | str, *, absolute: bool = False,
                    include_errors: bool = False,
-                   include_events: bool = False) -> Iterator[CANFrame | CANEvent]:
+                   include_events: bool = False,
+                   ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]:
         """Parse a BUSMASTER log file, yielding CANFrame objects.
 
         By default the first frame's timestamp becomes t=0 and all
@@ -267,8 +268,20 @@ class BusmasterParser(BaseParser):
         distinct, non-overlapping time base so that merge_files() can chain
         them correctly with heapq.merge.  Files without the header fall back
         to session-relative time (epoch=0), which is the pre-fix behaviour.
+
+        *ids* / *clock_ids*: see :func:`canbench.parsers.base.id_filter_sets`.
+        With *ids*, a line is first tested against a cheap text pattern for the
+        ids (`` 0x<id> ``), so the full parse runs only on candidate lines; the
+        result is the same as running this parser on a copy of the file
+        filtered to those frames, ERR lines removed.
         """
         path = Path(path)
+        id_set, clock_set = id_filter_sets(ids, clock_ids)
+        prefilter = None
+        if id_set is not None:
+            prefilter = re.compile(
+                r"\s0x0*(?:%s)\s" % "|".join("%X" % i for i in sorted(id_set)),
+                re.IGNORECASE)
         hex_mode = True  # default; toggled by ***HEX*** / ***DEC***
         t_origin: float | None = None
         prev_rel: float | None = None
@@ -300,13 +313,27 @@ class BusmasterParser(BaseParser):
                 # check whether or not it is yielded: the writer's origin is
                 # the first frame it wrote, of either kind, and
                 # canre/utils/timebase.py counts every Rx/Tx line the same way.
-                m = _DATA_RE.match(line)
-                is_error = False
-                if not m:
-                    m = _ERR_RE.match(line)
+                clocked = True
+                if id_set is not None:
+                    # ids=: other ids and ERR lines never reach the time base.
+                    if not prefilter.search(line):
+                        continue
+                    m = _DATA_RE.match(line)
                     if not m:
                         continue
-                    is_error = True
+                    arb_kept = int(m.group(4), 16)
+                    if arb_kept not in id_set:
+                        continue
+                    is_error = False
+                    clocked = arb_kept in clock_set
+                else:
+                    m = _DATA_RE.match(line)
+                    is_error = False
+                    if not m:
+                        m = _ERR_RE.match(line)
+                        if not m:
+                            continue
+                        is_error = True
 
                 ts_str = m.group(1)
 
@@ -314,6 +341,18 @@ class BusmasterParser(BaseParser):
 
                 if absolute:
                     timestamp = session_epoch + rel_time
+                elif not clocked:
+                    # A kept frame outside clock_ids: stamped on the time base
+                    # in force, taking no part in the origin or the rollover.
+                    # It applies the rollover test to itself, against the last
+                    # clock frame, so a frame just after midnight that precedes
+                    # the next clock frame is not stamped a day early.
+                    if t_origin is None:
+                        continue
+                    own_day = day_offset
+                    if rel_time < prev_rel - _ROLLOVER_BACKSTEP:
+                        own_day += 86400.0
+                    timestamp = rel_time + own_day - t_origin
                 else:
                     if t_origin is None:
                         t_origin = rel_time

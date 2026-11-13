@@ -35,7 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANEvent, CANFrame
+from .base import BaseParser, CANEvent, CANFrame, id_filter_sets
 
 _VERSION_RE = re.compile(r";\$FILEVERSION\s*=\s*([\d.]+)", re.IGNORECASE)
 _STARTTIME_RE = re.compile(r";\$STARTTIME\s*=\s*([\d.]+)", re.IGNORECASE)
@@ -147,7 +147,8 @@ class PeakTrcParser(BaseParser):
         return has_comment_header and has_numbered_data
 
     def parse_file(self, path: Path | str, *, absolute: bool = False,
-                   include_events: bool = False) -> Iterator[CANFrame | CANEvent]:
+                   include_events: bool = False,
+                   ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]:
         """Parse a PEAK TRC file, yielding CANFrame objects (and CANEvent
         objects in file order if *include_events* is True).
 
@@ -156,8 +157,15 @@ class PeakTrcParser(BaseParser):
         True, timestamps are seconds from midnight of ;$STARTTIME plus the
         line's offset, matching BUSMASTER's absolute mode; a file without
         ;$STARTTIME falls back to the trace offset alone.
+
+        *ids* / *clock_ids*: see :func:`canbench.parsers.base.id_filter_sets`.
+        With *ids*, a 2.x line whose type column is not a frame type or whose
+        id column is not one of *ids* is dropped before the full parse; lines
+        dropped by the filter are not counted in ``self.skipped``.
         """
         path = Path(path)
+        id_set, clock_set = id_filter_sets(ids, clock_ids)
+        pre_cols = None           # (type index, id index) for the 2.x prefilter
         self.skipped = Counter()
         version = "1.0"           # a file without $FILEVERSION is 1.0
         columns: list[str] | None = None
@@ -189,15 +197,38 @@ class PeakTrcParser(BaseParser):
                 else:
                     if columns is None:
                         columns = _DEFAULT_COLUMNS.get(version, _DEFAULT_COLUMNS["2.1"]).split(",")
+                    if id_set is not None:
+                        if pre_cols is None:
+                            pre_cols = ((columns.index("T"), columns.index("I"))
+                                        if "T" in columns and "I" in columns else ())
+                        if pre_cols:
+                            toks = line.split(None, max(pre_cols) + 1)
+                            try:
+                                if (toks[pre_cols[0]] not in _FRAME_TYPES
+                                        or int(toks[pre_cols[1]], 16) not in id_set):
+                                    continue
+                            except (IndexError, ValueError):
+                                continue
                     rec = self._parse_v2(line, version, columns)
                 if rec is None:
                     self.skipped["unparsed"] += 1
                     continue
                 kind, offset_ms, rec = rec
 
+                clocked = True
+                if id_set is not None:
+                    # ids=: other ids and non-frame records never reach the origin.
+                    if kind != "frame" or rec.arbitration_id not in id_set:
+                        continue
+                    clocked = rec.arbitration_id in clock_set
+
                 offset = offset_ms / 1000.0
                 if absolute:
                     timestamp = day_seconds + offset
+                elif not clocked:
+                    if t_origin is None:
+                        continue
+                    timestamp = offset - t_origin
                 else:
                     if t_origin is None:
                         t_origin = offset

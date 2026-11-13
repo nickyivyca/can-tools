@@ -99,3 +99,43 @@ class BaseParser(ABC):
         This is needed for chaining T-chunk files that share a timeline.
         """
         ...
+
+
+def id_filter_sets(ids, clock_ids):
+    """Validate a parser's ``ids`` / ``clock_ids`` arguments.
+
+    Returns ``(id_set, clock_set)`` as frozensets of ints, or ``(None, None)``
+    when no id filter was asked for. ``clock_ids`` defaults to ``ids`` and must
+    be a subset of it.
+
+    Semantics, for every parser that accepts them (BUSMASTER, PEAK TRC):
+
+    - ``ids``: only frames with these arbitration ids exist for the call. Every
+      other line -- other ids, and non-frame lines (BUSMASTER ``ERR``, TRC
+      ``ER``/``ST``/``EC``/``EV``) -- is skipped before it can take part in the
+      time origin or the BUSMASTER midnight rollover, exactly as if the file had
+      first been filtered down to those frames. No events are yielded.
+    - ``clock_ids``: of those, the ids whose frames define the time base: the
+      origin (first such frame) and, for BUSMASTER, the rollover check (against
+      the previous such frame). A frame of another kept id is stamped with the
+      time base in force at its line, and dropped if it comes before the first
+      clock frame. (BUSMASTER: such a frame also applies the rollover test
+      to itself against the last clock frame, without changing the time
+      base, so one written just after midnight before the next clock frame is
+      not stamped a day early.) In absolute mode there is no origin, so it
+      changes nothing.
+
+    A format that does not implement this raises rather than giving the
+    origin a different meaning.
+    """
+    if ids is None:
+        if clock_ids is not None:
+            raise ValueError("clock_ids needs ids")
+        return None, None
+    id_set = frozenset(int(i) for i in ids)
+    clock_set = id_set if clock_ids is None else frozenset(int(i) for i in clock_ids)
+    if not clock_set:
+        raise ValueError("clock_ids is empty")
+    if not clock_set <= id_set:
+        raise ValueError("clock_ids must be a subset of ids")
+    return id_set, clock_set

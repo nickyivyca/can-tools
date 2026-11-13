@@ -76,7 +76,8 @@ def detect_format(path: Path | str) -> BaseParser:
 
 def parse_file(path: Path | str, *, absolute: bool = False,
                include_errors: bool = False, include_events: bool = False,
-               mark_inferred_errors: bool = False) -> Iterator[CANFrame | CANEvent]:
+               mark_inferred_errors: bool = False,
+               ids=None, clock_ids=None) -> Iterator[CANFrame | CANEvent]:
     """Auto-detect format and parse a CAN log file, yielding CANFrame objects.
 
     This is the main convenience entry point. It combines ``detect_format``
@@ -103,13 +104,32 @@ def parse_file(path: Path | str, *, absolute: bool = False,
         in ``inferred_errors.py`` identifies as adapter error reports written
         as ordinary frames.  May read the file twice.  Never drops a frame.
 
+    ids, clock_ids : iterables of int, optional
+        Keep only frames of *ids*, as if the file had been filtered to them
+        first; *clock_ids* (default *ids*) are the frames that define the time
+        origin and the BUSMASTER rollover. BUSMASTER and PEAK TRC only; other
+        formats raise ``NotImplementedError``. See
+        :func:`canbench.parsers.base.id_filter_sets`.
+
     Yields
     ------
     CANFrame, CANEvent
         Frames (and events, if asked for) in file order.
     """
     parser = detect_format(path)
-    if isinstance(parser, (BusmasterParser, CandumpParser)):
+    if ids is not None or clock_ids is not None:
+        if isinstance(parser, BusmasterParser):
+            records = parser.parse_file(path, absolute=absolute, include_errors=include_errors,
+                                        include_events=include_events,
+                                        ids=ids, clock_ids=clock_ids)
+        elif isinstance(parser, PeakTrcParser):
+            records = parser.parse_file(path, absolute=absolute, include_events=include_events,
+                                        ids=ids, clock_ids=clock_ids)
+        else:
+            raise NotImplementedError(
+                "ids=/clock_ids= are implemented for BUSMASTER and PEAK TRC only, not %s"
+                % type(parser).__name__)
+    elif isinstance(parser, (BusmasterParser, CandumpParser)):
         records = parser.parse_file(path, absolute=absolute, include_errors=include_errors,
                                     include_events=include_events)
     elif isinstance(parser, PeakTrcParser):
