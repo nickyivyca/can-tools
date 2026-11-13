@@ -155,6 +155,73 @@ def test_assign_refuses_to_guess_between_adapters():
     assert replay.assign_adapters([1], ix, ["1=HW123456"]) == {1: 0}
 
 
+class _Capture:
+    def __init__(self):
+        self.records = []
+
+    def __enter__(self):
+        import logging
+        self.h = logging.Handler()
+        self.h.emit = self.records.append
+        receiver.logger.addHandler(self.h)
+        self.level = receiver.logger.level
+        receiver.logger.setLevel(logging.DEBUG)
+        return self
+
+    def __exit__(self, *a):
+        receiver.logger.removeHandler(self.h)
+        receiver.logger.setLevel(self.level)
+
+    def lines(self, level):
+        return [r.getMessage() for r in self.records if r.levelname == level]
+
+
+def test_asked_brand_that_does_not_open_is_reported_at_info():
+    """A Kvaser that is listed but will not open (canSetBusParams -2) is named at INFO
+    when --brands asked for kvaser; channels past the last one are grouped."""
+    def bus(**kw):
+        if kw.get("interface") != "kvaser":
+            return _FakeBus(**kw)
+        if kw["channel"] == 0:
+            raise can.CanError("Function canSetBusParams failed - No messages available [Error Code -2]")
+        raise can.CanError("Function canOpenChannel failed - Specified device not found [Error Code -3]")
+    real = can.interface.Bus
+    can.interface.Bus = bus
+    try:
+        with _Capture() as cap:
+            got = receiver.detect_all_can_interfaces(500000, brands={"kvaser"}, _sysfs=_sysfs(RIG))
+    finally:
+        can.interface.Bus = real
+    assert got == []
+    info = cap.lines("INFO")
+    assert info == ["kvaser: not opened during detection: ch 0: Function canSetBusParams failed - No messages "
+                    "available [Error Code -2]; ch 1, ch 2, ch 3, ch 4, ch 5, ch 6, ch 7: Function canOpenChannel "
+                    "failed - Specified device not found [Error Code -3]"], info
+    assert len(cap.lines("DEBUG")) == 8
+
+
+def test_socketcan_open_failure_reported_when_asked():
+    def bus(**kw):
+        raise can.CanError("boom")
+    real = can.interface.Bus
+    can.interface.Bus = bus
+    try:
+        with _Capture() as cap:
+            receiver.detect_all_can_interfaces(500000, brands={"ixxat"}, _sysfs=_sysfs(
+                [("can1", 280, "ix_usb_can", "0x40081")]))
+    finally:
+        can.interface.Bus = real
+    assert "socketcan: not opened during detection: can1: boom" in cap.lines("INFO"), cap.lines("INFO")
+
+
+def test_unasked_brand_stays_at_debug():
+    with _Capture() as cap:
+        s = receiver._Skipped("kvaser", False)
+        s.add("ch 0", "Error Code -2")
+        s.report()
+    assert cap.lines("INFO") == [] and cap.lines("DEBUG") == ["kvaser ch 0: Error Code -2"]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

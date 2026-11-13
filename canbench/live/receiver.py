@@ -404,6 +404,30 @@ def _gs_usb_kernel_bound(dev):
         return False
 
 
+class _Skipped:
+    """Channels of one brand that did not open during detection, grouped by error.
+
+    Each failure is logged at DEBUG as before. When the caller asked for the brand by
+    name (``--brands``), :meth:`report` also logs one INFO line per brand listing the
+    channels that did not open and why, so an adapter that is present but will not
+    open is not silently missing from the list (2026-11-13: a Kvaser Leaf whose
+    firmware stopped answering failed every open with canSetBusParams -2, and the
+    replayer only said that no adapter had its serial).
+    """
+
+    def __init__(self, brand, asked):
+        self.brand, self.asked, self.by_err = brand, asked, {}
+
+    def add(self, label, err):
+        logger.debug(f"{self.brand} {label}: {err}")
+        self.by_err.setdefault(str(err), []).append(str(label))
+
+    def report(self):
+        if self.asked and self.by_err:
+            parts = [f"{', '.join(labels)}: {text}" for text, labels in self.by_err.items()]
+            logger.info(f"{self.brand}: not opened during detection: " + "; ".join(parts))
+
+
 def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
     """Detect all available CAN interfaces.
 
@@ -484,6 +508,7 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
 
     # Try kvaser channels (filter out virtual devices)
     if brands is None or 'kvaser' in brands:
+        skipped = _Skipped('kvaser', brands is not None)
         for ch in range(8):
             try:
                 bus = can.interface.Bus(interface='kvaser', channel=ch, bitrate=bitrate)
@@ -503,10 +528,12 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                 interfaces.append(Adapter('kvaser', ch, _with_ids(f'kvaser channel {ch}', ids), ids))
                 logger.info(f"Detected {interfaces[-1].desc}")
             except Exception as e:
-                logger.debug(f"kvaser channel {ch}: {e}")
+                skipped.add(f"ch {ch}", e)
+        skipped.report()
 
     # Try pcan channels
     if brands is None or 'pcan' in brands:
+        skipped = _Skipped('pcan', brands is not None)
         for ch in ['PCAN_USBBUS1', 'PCAN_USBBUS2', 'PCAN_USBBUS3', 'PCAN_USBBUS4']:
             try:
                 bus = can.interface.Bus(interface='pcan', channel=ch, bitrate=bitrate)
@@ -519,12 +546,14 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
                 interfaces.append(Adapter('pcan', ch, _with_ids(f'pcan {ch}', ids), ids))
                 logger.info(f"Detected {interfaces[-1].desc}")
             except Exception as e:
-                logger.debug(f"pcan {ch}: {e}")
+                skipped.add(ch, e)
+        skipped.report()
 
     # SocketCAN (Linux): every CAN interface, picked by its driver. 'socketcan'
     # selects all of them; a brand ('ixxat', 'gs_usb'/'innomaker', 'kvaser',
     # 'pcan') selects the interfaces whose driver is that brand's. The bit rate
     # belongs to the interface (ip link), so an interface that is down is skipped.
+    skipped = _Skipped('socketcan', brands is not None)
     for ch, driver, is_up in sockcan:
         brand = _SOCKETCAN_DRIVER_BRAND.get(driver)
         wanted = (brands is None or 'socketcan' in brands or (brand is not None and brand in brands)
@@ -545,6 +574,7 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
             interfaces.append(Adapter('socketcan', ch, desc, ids))
             logger.info(f"Detected {desc}")
         except Exception as e:
-            logger.debug(f"socketcan {ch}: {e}")
+            skipped.add(ch, e)
+    skipped.report()
 
     return interfaces
