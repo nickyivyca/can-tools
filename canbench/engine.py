@@ -133,7 +133,7 @@ class CaptureEngine:
             # log only frames sourced on a captured bus
             if self._writer is not None and (self._capture_ids is None or bus_id in self._capture_ids):
                 msg.channel = logio.bus_channel(bus_id)
-                msg.timestamp = time.time()
+                # msg.timestamp: the frame's own, on the wall clock (CANBusLogger / live/clock.py)
                 try:
                     self._writer(msg)
                 except Exception as e:

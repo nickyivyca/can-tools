@@ -23,7 +23,8 @@ separately; nothing in here depends on it.
 
 The default capture format is **candump / SocketCAN `.log`** — read and written
 natively by [python-can](https://python-can.readthedocs.io), plain-text and
-greppable, with absolute epoch timestamps and a per-line interface field that
+greppable, with absolute epoch timestamps (each frame's own, from its adapter's clock put on the
+wall clock: `canbench/live/clock.py`) and a per-line interface field that
 preserves multi-bus identity (`can0`, `can1`, ...). Vector `.asc` / `.blf` and
 CSV are also supported for read/replay (dispatched by file extension).
 
@@ -116,6 +117,7 @@ canbench/
                  re-enumerate. Hand an Innomaker back to the kernel in-process only after release_gs_usb().
                  backends.py: install() puts pcan_bus.CanbenchPcanBus and kvaser_bus.CanbenchKvaserBus
                  behind python-can's "pcan" / "kvaser" names (Linux-layout error reports, PCAN bus-off reset)
+  live/clock.py  frame timestamps: the adapter's clock on the wall clock (drift, wrap)
   errors.py      the canonical error record: Linux error-frame decoding, PCAN / Kvaser translations, TRC records
   trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames
   logio.py       log read/write: content-detected reading, candump writing (.trc: trcwriter)

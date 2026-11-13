@@ -31,6 +31,7 @@ import can
 from canbench.live.receiver import CANBusLogger, detect_all_can_interfaces
 from canbench import logio, buses
 from canbench.passthrough import PassthroughBridge
+from canbench.live.clock import FrameClock
 
 # Configure logging
 logging.basicConfig(
@@ -69,10 +70,12 @@ def run_passthrough(interfaces, output_path, bitrate):
     signal.signal(signal.SIGTERM, signal_handler)
 
     count = [0]
+    clocks = {0: FrameClock(ia), 1: FrameClock(ib)}
     with logio.open_writer(output_path) as writer:
         def on_frame(src_id, msg):
+            # called right after recv(): the frame's own timestamp on the wall clock
+            clocks[src_id].stamp(msg)
             msg.channel = logio.bus_channel(src_id)
-            msg.timestamp = time.time()
             writer(msg)
             count[0] += 1
 
@@ -241,9 +244,9 @@ def main():
         for bus_logger in buses:
             bus_logger.start()
 
-        # Drain the queue to the candump writer. The per-message channel carries
-        # the logical bus id; the timestamp is stamped at consume time to give a
-        # consistent absolute-epoch timeline regardless of dongle-backend clock.
+        # Drain the queue to the writer. The per-message channel carries the
+        # logical bus id. Each frame already carries its own timestamp, put on the
+        # wall clock by its bus's receive thread (canbench/live/clock.py).
         message_count = 0
         with logio.open_writer(args.output) as writer:
             last_status = time.time()
@@ -252,7 +255,6 @@ def main():
                 try:
                     timestamp, bus_id, msg, direction = message_queue.get(timeout=0.5)
                     msg.channel = logio.bus_channel(bus_id)
-                    msg.timestamp = time.time()
                     writer(msg)
                     message_count += 1
 
@@ -273,6 +275,8 @@ def main():
         logger.info("Stopping buses...")
         for bus_logger in buses:
             bus_logger.stop()
+        for bus_logger in buses:
+            logger.info(f"Bus {bus_logger.bus_id} timestamps: {bus_logger.clock.stats()}")
 
     logger.info("")
     logger.info("=" * 60)

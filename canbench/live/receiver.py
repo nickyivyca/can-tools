@@ -20,6 +20,8 @@ import re
 import subprocess
 import threading
 import time
+
+from canbench.live.clock import FrameClock
 from collections import namedtuple
 
 from canbench.live import linux_fixes
@@ -183,6 +185,8 @@ class CANBusLogger:
         self.iface = iface
         self.ch = ch
         self.bitrate = bitrate
+        # the frame's own timestamp on the wall clock (canbench/live/clock.py)
+        self.clock = FrameClock(iface)
 
     def start(self):
         """Start logging from this bus in a background thread."""
@@ -198,7 +202,9 @@ class CANBusLogger:
             try:
                 msg = self.bus.recv(timeout=0.1)
                 if msg is not None:
-                    timestamp = time.time() - self.start_time
+                    host = time.time()
+                    self.clock.stamp(msg, host)
+                    timestamp = host - self.start_time
                     self.message_queue.put((timestamp, self.bus_id, msg, "Rx"))
             except Exception as e:
                 if self.running:

@@ -82,7 +82,7 @@ ixxat) — older ixxat hardware may use `0A71`; update `_usb_reset_ixxat()` if s
 ## Threading model
 
 - N daemon receive threads (one per interface) push `(rel_ts, bus_id, msg, dir)` onto a queue
-- One writer thread drains the queue, stamps each message with an absolute wall-clock timestamp, sets `msg.channel = canN`, and writes it via python-can
+- Each bus's receive thread puts the frame's own timestamp on the wall clock (`canbench/live/clock.py`): SocketCAN's kernel receive time is kept as is; a device clock (PCAN, Kvaser, gs_usb over libusb, ixxat) is mapped by the lower envelope of host-receive minus device time, with drift tracked and the gs_usb counter's wrap unwrapped. One writer thread drains the queue, sets `msg.channel = canN`, and writes it via python-can. At stop the logger prints each bus's mapping (offset, drift). Before 2026-11-12 the writer re-stamped every frame with the host time when it took it off the queue.
 - SIGINT/SIGTERM → graceful shutdown
 
 ## Known limitations
