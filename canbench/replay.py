@@ -25,6 +25,7 @@ Rules (owner ruling 4, reverse-it ``tools/plans/can-replay-readers.md`` step 5):
 """
 from __future__ import annotations
 
+import errno
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -318,9 +319,16 @@ class SendStats:
         self._pending: Counter = Counter()        # failures not yet in a log line
         self._reported_at: Dict[Union[int, str], float] = {}
         self._last_text: Dict[Union[int, str], str] = {}
+        self.waited: Counter = Counter()          # frames sent after waiting on a full queue
+        self.wait_max: Dict[Union[int, str], float] = {}
 
     def ok(self, bus) -> None:
         self.sent[bus] += 1
+
+    def waited_for(self, bus, seconds: float) -> None:
+        """Count a frame that went out after ``seconds`` waiting on a full transmit queue."""
+        self.waited[bus] += 1
+        self.wait_max[bus] = max(self.wait_max.get(bus, 0.0), seconds)
 
     def fail(self, bus, index: int, total: int, t_log: float, err) -> None:
         """Count a failed send of frame ``index`` (0-based, of ``total``) at log time ``t_log`` s."""
@@ -369,3 +377,46 @@ class SendStats:
             out.append(f"{bus}: {self.sent[bus]:,} sent, {self.failed[bus]:,} failed "
                        f"(t={self.first_fail[bus]:.3f}-{self.last_fail[bus]:.3f} s in the log): {kinds}")
         return out
+
+    def wait_lines(self) -> List[str]:
+        """One line per bus where a frame waited on a full transmit queue (and then went out)."""
+        return [f"{bus}: {self.waited[bus]:,} frames waited, longest {self.wait_max[bus] * 1000:.1f} ms"
+                for bus in sorted(self.waited, key=lambda k: (isinstance(k, str), k))]
+
+
+def queue_full(err) -> bool:
+    """True for SocketCAN's ENOBUFS ("No buffer space available", python-can error code 105).
+
+    The interface's transmit queue (``txqueuelen``, 10 by default) is full for the moment
+    and the frame was not taken; ``select`` does not wait for room, so python-can's own
+    send timeout does not help. Other backends' errors are not matched.
+    """
+    return getattr(err, "error_code", None) == errno.ENOBUFS
+
+
+def send_waiting(bus, msg, wait_s: float, sleep=None, clock=None) -> float:
+    """``bus.send(msg)``, trying again while it raises ENOBUFS, for up to ``wait_s`` seconds.
+
+    Waits 0.5 ms between tries, doubling to 5 ms. Returns the time spent waiting (0.0
+    when the first send went out). Any other error is raised at once; ENOBUFS is raised
+    when the queue is still full after ``wait_s`` (or at once when ``wait_s`` <= 0).
+    """
+    import time
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    start = None
+    pause = 0.0005
+    while True:
+        try:
+            bus.send(msg)
+            return 0.0 if start is None else clock() - start
+        except can.CanError as e:
+            if not queue_full(e) or wait_s <= 0:
+                raise
+            now = clock()
+            if start is None:
+                start = now
+            elif now - start >= wait_s:
+                raise
+            sleep(pause)
+            pause = min(pause * 2, 0.005)

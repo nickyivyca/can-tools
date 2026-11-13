@@ -1,11 +1,13 @@
 """Send failures during a replay (canbench.replay.SendStats, can_replayer.replay_once):
-counted per bus, logged once per kind and then rate-limited, and summarised.
+counted per bus, logged once per kind and then rate-limited, and summarised; and the
+wait on a full SocketCAN transmit queue (ENOBUFS, canbench.replay.send_waiting).
 
 Fake buses and a fake clock only; no adapter is opened.
 
 Run standalone:   python tests/test_replay_send.py
 Or under pytest:  python -m pytest tests/test_replay_send.py
 """
+import errno
 import importlib.util
 import logging
 import sys
@@ -17,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 import can  # noqa: E402
 
-from canbench.replay import SendStats  # noqa: E402
+from canbench.replay import SendStats, queue_full, send_waiting  # noqa: E402
 
 
 def _replayer():
@@ -113,6 +115,142 @@ def test_replay_once_without_stats_still_returns_count():
     logging.getLogger("canbench.replay").setLevel(logging.ERROR)
     frames = _frames([(0.0, 0), (0.001, 0)])
     assert rp.replay_once(frames, {0: _Bus(fail_from=1)}, 0, threading.Event()) == 1
+
+
+ENOBUFS_TEXT = "Failed to transmit: No buffer space available"
+
+
+class _FullBus:
+    """Raises ENOBUFS (python-can's socketcan form) on the sends whose 0-based attempt
+    number is in ``full_on`` (or on every send when ``full_on`` is None)."""
+
+    def __init__(self, full_on=(), clock=None):
+        self.full_on, self.clock, self.attempts, self.sent = full_on, clock, 0, []
+
+    def send(self, msg):
+        n = self.attempts
+        self.attempts += 1
+        if self.full_on is None or n in self.full_on:
+            if self.clock is not None:
+                self.clock.t += 0.001
+            raise can.CanOperationError(ENOBUFS_TEXT, errno.ENOBUFS)
+        self.sent.append(msg)
+
+
+def _msg():
+    return can.Message(arbitration_id=0x7A0, data=b"\x01", is_extended_id=False)
+
+
+def test_queue_full_matches_enobufs_only():
+    assert queue_full(can.CanOperationError(ENOBUFS_TEXT, errno.ENOBUFS))
+    assert not queue_full(can.CanOperationError("A hardware error was detected", -15))
+    assert not queue_full(can.CanOperationError("no code"))
+
+
+def test_send_waiting_retries_with_backoff_and_returns_the_wait():
+    clock, pauses = _Clock(), []
+    bus = _FullBus(full_on={0, 1, 2}, clock=clock)
+    w = send_waiting(bus, _msg(), 0.1, sleep=lambda s: (pauses.append(s), setattr(clock, "t", clock.t + s)),
+                     clock=clock)
+    assert len(bus.sent) == 1 and bus.attempts == 4
+    assert pauses == [0.0005, 0.001, 0.002], pauses
+    assert abs(w - (0.0005 + 0.001 + 0.001 + 0.002 + 0.001)) < 1e-9, w
+
+
+def test_send_waiting_gives_up_after_the_wait_and_raises_other_errors_at_once():
+    clock = _Clock()
+    bus = _FullBus(full_on=None, clock=clock)
+    try:
+        send_waiting(bus, _msg(), 0.05, sleep=lambda s: setattr(clock, "t", clock.t + s), clock=clock)
+        raise AssertionError("expected ENOBUFS")
+    except can.CanOperationError as e:
+        assert queue_full(e)
+    assert 0.05 <= clock.t < 0.065 and bus.attempts > 5, (clock.t, bus.attempts)
+    hw, slept = _Bus(fail_from=0), []
+    try:
+        send_waiting(hw, _msg(), 0.1, sleep=slept.append)
+        raise AssertionError("expected the hardware error")
+    except can.CanOperationError:
+        pass
+    assert slept == []
+    nowait = _FullBus(full_on={0})
+    try:
+        send_waiting(nowait, _msg(), 0, sleep=slept.append)
+        raise AssertionError("expected ENOBUFS with no wait")
+    except can.CanOperationError:
+        pass
+    assert slept == [] and nowait.attempts == 1
+
+
+def test_replay_once_waits_on_a_full_queue_and_sends_late():
+    rp = _replayer()
+    log = _Log()
+    stats = SendStats(log=log)
+    bus = _FullBus(full_on={3, 4})
+    frames = _frames([(i * 0.001, "d_can") for i in range(10)])
+    tx = rp.replay_once(frames, {"d_can": bus}, 0, threading.Event(), stats, 0.1)
+    assert tx == 10 and len(bus.sent) == 10 and stats.total_failed == 0 and log.lines == []
+    assert stats.waited == {"d_can": 1}
+    assert stats.wait_lines()[0].startswith("d_can: 1 frames waited, longest "), stats.wait_lines()
+
+
+def test_replay_once_with_no_wait_keeps_the_old_count():
+    rp = _replayer()
+    stats = SendStats(log=_Log())
+    bus = _FullBus(full_on={3})
+    frames = _frames([(i * 0.001, "d_can") for i in range(10)])
+    assert rp.replay_once(frames, {"d_can": bus}, 0, threading.Event(), stats, 0) == 9
+    assert stats.failed == {"d_can": 1} and not stats.waited
+
+
+def test_replay_once_stops_waiting_on_a_stuck_bus_until_a_send_goes_out():
+    rp = _replayer()
+    stats = SendStats(log=_Log())
+    bus = _FullBus(full_on=set(range(0, 10_000)))
+    frames = _frames([(i * 0.001, "b_can") for i in range(50)])
+    tx = rp.replay_once(frames, {"b_can": bus}, 0, threading.Event(), stats, 0.02)
+    assert tx == 0 and stats.failed == {"b_can": 50}
+    first_wait = bus.attempts - 49                  # every later frame is tried once
+    assert 3 < first_wait < 20, bus.attempts        # only the first frame waited (~7 tries in 20 ms)
+
+
+class _PerFrameBus:
+    """ENOBUFS by frame (data[0] = frame index): ``full[i]`` = how many tries of frame i
+    are refused (None: all of them)."""
+
+    def __init__(self, full, hw=()):
+        self.full, self.hw, self.tries, self.sent = full, hw, {}, []
+
+    def send(self, msg):
+        i = msg.data[0]
+        n = self.tries[i] = self.tries.get(i, 0) + 1
+        if i in self.hw:
+            raise can.CanOperationError("A hardware error was detected", -15)
+        limit = self.full.get(i, 0)
+        if limit is None or n <= limit:
+            raise can.CanOperationError(ENOBUFS_TEXT, errno.ENOBUFS)
+        self.sent.append(i)
+
+
+def test_replay_once_waits_again_once_a_stuck_bus_sends():
+    rp = _replayer()
+    stats = SendStats(log=_Log())
+    bus = _PerFrameBus({0: None, 1: None, 2: None, 4: 2})
+    frames = [can.Message(timestamp=i * 0.001, arbitration_id=0x7A0, data=bytes([i]), channel="b_can",
+                          is_extended_id=False) for i in range(6)]
+    assert rp.replay_once(frames, {"b_can": bus}, 0, threading.Event(), stats, 0.02) == 3
+    assert bus.sent == [3, 4, 5] and stats.failed == {"b_can": 3} and stats.waited == {"b_can": 1}
+    assert bus.tries[1] == 1 and bus.tries[2] == 1 and bus.tries[0] > 3, bus.tries
+
+
+def test_another_error_does_not_stop_the_wait():
+    rp = _replayer()
+    stats = SendStats(log=_Log())
+    bus = _PerFrameBus({1: 1}, hw={0})
+    frames = [can.Message(timestamp=i * 0.001, arbitration_id=0x7A0, data=bytes([i]), channel="b_can",
+                          is_extended_id=False) for i in range(2)]
+    assert rp.replay_once(frames, {"b_can": bus}, 0, threading.Event(), stats, 0.02) == 1
+    assert bus.sent == [1] and stats.failed == {"b_can": 1} and stats.waited == {"b_can": 1}
 
 
 if __name__ == "__main__":

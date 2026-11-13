@@ -22,12 +22,21 @@ Kvaser channel numbers follow plug order), or narrow ``--brands`` to one adapter
 Detection order follows plug order, so the replayer refuses rather than guess.
 Only the adapters something is sent on are opened.
 
-Send failures (2026-11-13): a send that raises is counted per bus, not retried. The
+Send failures (2026-11-13): a send that raises is counted per bus, not retried (except
+ENOBUFS, below). The
 first failure of each kind on a bus is logged with its frame number, then one line per
 10 s while that bus keeps failing. The summary gives each failing bus its sent and
 failed counts, the errors and the log time span of the failures, and says when a signal
 stopped the replay early. Exit status: 0 when every send went out, 3 when any failed,
 1 when the adapters could not be opened.
+
+Full transmit queue (2026-11-13): SocketCAN refuses a frame with ENOBUFS while the
+interface's queue (txqueuelen, 10 by default) is full, which cost 69-133 frames per chunk
+on the X2's slcan in the Android session's runs. The replayer now waits for room, up to
+--enobufs-wait-ms (default 100; 0 = the old behaviour), and sends the frame late rather
+than drop it; the summary lists the waited frames per bus. A frame still refused after
+the wait counts as failed, and that bus then fails ENOBUFS at once until one of its sends
+goes out again.
 
 Usage:
     python tools/can_replayer.py capture.log
@@ -95,7 +104,7 @@ def open_buses(interfaces, bitrate):
     return buses
 
 
-def replay_once(frames, channel_map, speed, abort_event, stats=None):
+def replay_once(frames, channel_map, speed, abort_event, stats=None, enobufs_wait_s=0.1):
     """Transmit all frames once, honouring timing.
 
     Args:
@@ -105,6 +114,10 @@ def replay_once(frames, channel_map, speed, abort_event, stats=None):
         abort_event: threading.Event - set to request early stop
         stats: canbench.replay.SendStats, counting sends and failures per bus
             (a new one if None)
+        enobufs_wait_s: how long a send waits for room when the SocketCAN transmit
+            queue is full (ENOBUFS) before it counts as failed; 0 = no wait. A bus
+            whose queue stayed full past it fails further ENOBUFS at once until one
+            of its sends goes out again, so a bus with no ACKer does not slow the replay.
 
     Returns:
         Number of frames transmitted (sends that did not raise).
@@ -116,6 +129,7 @@ def replay_once(frames, channel_map, speed, abort_event, stats=None):
 
     tx_count = 0
     total = len(frames)
+    stuck = set()          # buses whose queue stayed full past the wait
     start_wall = time.perf_counter()
     log_start_ts = frames[0].timestamp
 
@@ -138,11 +152,17 @@ def replay_once(frames, channel_map, speed, abort_event, stats=None):
             dlc=frame.dlc,
             is_remote_frame=frame.is_remote_frame,
         )
+        wait_s = 0 if frame.channel in stuck else enobufs_wait_s
         try:
-            output_bus.send(msg)
+            waited = replay.send_waiting(output_bus, msg, wait_s)
             tx_count += 1
             stats.ok(frame.channel)
+            stuck.discard(frame.channel)
+            if waited:
+                stats.waited_for(frame.channel, waited)
         except can.CanError as e:
+            if wait_s > 0 and replay.queue_full(e):
+                stuck.add(frame.channel)
             stats.fail(frame.channel, index, total, frame.timestamp - log_start_ts, e)
 
     stats.flush()
@@ -230,6 +250,13 @@ def main():
         '--loop', '-l',
         action='store_true',
         help='Loop replay indefinitely (Ctrl+C to stop)'
+    )
+    parser.add_argument(
+        '--enobufs-wait-ms',
+        type=float, default=100.0, metavar='MS',
+        help='When a SocketCAN transmit queue is full (ENOBUFS), wait up to MS for room and '
+             'send the frame then, instead of counting it failed (default 100; 0 = no wait). '
+             'Waited frames go out late by the wait; the summary lists them per bus.'
     )
     parser.add_argument(
         '--skip-confirmation',
@@ -383,7 +410,8 @@ def main():
             label = f"pass {pass_num}" if args.loop else "replay"
             logger.info(f"Starting {label} ({len(frames):,} frames)...")
             failed_before = stats.total_failed
-            tx = replay_once(frames, channel_map, args.speed, abort_event, stats)
+            tx = replay_once(frames, channel_map, args.speed, abort_event, stats,
+                             max(args.enobufs_wait_ms, 0.0) / 1000.0)
             total_tx += tx
             logger.info(f"  Transmitted {tx:,} frames, {stats.total_failed - failed_before:,} sends failed")
 
@@ -405,6 +433,10 @@ def main():
     if stats.total_failed:
         print("Send failures by bus:")
         for line in stats.summary_lines():
+            print(f"  {line}")
+    if stats.waited:
+        print(f"Waited on a full transmit queue (sent, up to {args.enobufs_wait_ms:g} ms each):")
+        for line in stats.wait_lines():
             print(f"  {line}")
     print(f"Not sent (per pass): {skipped_summary(load)}")
     print("=" * 60)
