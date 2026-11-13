@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANEvent, CANFrame, id_filter_sets
+from .base import LOCAL, UTC, BaseParser, CANEvent, CANFrame, CaptureStart, id_filter_sets
 
 _VERSION_RE = re.compile(r";\$FILEVERSION\s*=\s*([\d.]+)", re.IGNORECASE)
 _STARTTIME_RE = re.compile(r";\$STARTTIME\s*=\s*([\d.]+)", re.IGNORECASE)
@@ -52,27 +53,54 @@ _EVENT_TYPES = {"ST", "ER", "EC", "EV"}
 _OLE_TO_UNIX_DAYS = 25569
 
 
-def start_time(path: Path | str) -> float | None:
-    """Unix time of the trace start from ;$STARTTIME, or None if absent.
+_START_LOCAL_RE = re.compile(r"^;\s*Start time \(local\):\s*(\S+)(?:\s+(\S+))?\s*$")
+_START_LOCAL_TAG_RE = re.compile(r"^;\s*Start time \(local\):")
+_OLE_EPOCH = datetime(1899, 12, 30)
 
-    The value is taken as UTC. That is right for the files canbench and the
-    Android loggers write (owner ruling 2026-11-13: $STARTTIME is UTC; such a
-    file also has a "Start time (local)" comment, see :func:`start_local`).
-    PEAK's recorders write local time there (their spec), so for a PEAK file the
-    absolute value is off by the recorder's UTC offset; deltas are exact either way.
+
+def trc_start(path: Path | str) -> CaptureStart | None:
+    """The trace start from ``;$STARTTIME`` as a :class:`CaptureStart`, or None if the
+    header has none.
+
+    Basis ``utc`` when the header has a ``;   Start time (local):`` comment: canbench's
+    writer and the Android loggers write it, and their ``$STARTTIME`` is UTC (owner ruling
+    2026-11-13); its IANA zone name, when given, is the start's ``zone``. Otherwise ``local``:
+    PEAK's recorders write the recording machine's local time there (their spec). Either
+    way ``seconds`` is ``(days - 25569) * 86400``.
     """
+    days = None
+    tagged = False
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             s = line.strip()
             if s and not s.startswith(";"):
-                return None
+                break
             m = _STARTTIME_RE.match(s)
-            if m:
-                return (float(m.group(1)) - _OLE_TO_UNIX_DAYS) * 86400.0
-    return None
+            if m and days is None:
+                days = float(m.group(1))
+            elif _START_LOCAL_TAG_RE.match(s):
+                tagged = True
+    if days is None:
+        return None
+    wall = _OLE_EPOCH + timedelta(days=days)
+    seconds = (days - _OLE_TO_UNIX_DAYS) * 86400.0
+    if not tagged:
+        return CaptureStart(seconds, LOCAL, wall, None, "TRC $STARTTIME (PEAK convention: local)")
+    local = start_local(path)
+    return CaptureStart(seconds, UTC, wall, local[1] if local else None,
+                        "TRC $STARTTIME (canbench convention: UTC)")
 
 
-_START_LOCAL_RE = re.compile(r"^;\s*Start time \(local\):\s*(\S+)(?:\s+(\S+))?\s*$")
+def start_time(path: Path | str) -> float | None:
+    """Seconds of the trace start from ;$STARTTIME, or None if absent:
+    ``trc_start(path).seconds``.
+
+    The epoch for the files canbench and the Android loggers write (``utc`` basis); for a
+    PEAK-written file (``local`` basis) the digits read as UTC, off from the true epoch by
+    the recorder's UTC offset. Deltas are exact either way. See :func:`trc_start`.
+    """
+    st = trc_start(path)
+    return st.seconds if st else None
 
 
 def start_local(path: Path | str):
@@ -120,6 +148,10 @@ def _is_extended(id_tok: str, arb_id: int) -> bool:
 
 class PeakTrcParser(BaseParser):
     """Parser for PEAK PCAN TRC log files."""
+
+    def start(self, path: Path | str) -> CaptureStart | None:
+        """See :func:`trc_start`."""
+        return trc_start(path)
 
     def __init__(self) -> None:
         self.skipped: Counter = Counter()

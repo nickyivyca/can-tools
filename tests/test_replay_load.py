@@ -12,7 +12,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from canbench.replay import ReplayInputError, load_for_replay, session_chunks
+import can  # noqa: E402
+
+from canbench.replay import ReplayInputError, load_for_replay, session_chunks  # noqa: E402
+from canbench.trcwriter import TRCWriter  # noqa: E402
 
 
 def _head(date, time, a1="Innomaker", a2="Innomaker"):
@@ -172,12 +175,58 @@ def test_candump_keeps_numeric_bus_and_skips_error_frames():
     assert full.error_frames == 1 and len(full.messages) == 2
 
 
-def test_several_files_only_for_busmaster_chunks():
+def test_candump_segments_chain_on_their_starts():
     d = _dir()
-    a, b = d / "a.log", d / "b.log"
-    a.write_text("(1700000000.000000) can0 308#0102\n", encoding="utf-8")
-    b.write_text("(1700000001.000000) can0 308#0102\n", encoding="utf-8")
-    assert "_T chunks" in _raises(load_for_replay, [a, b])
+    a, b = d / "cap_T0.log", d / "cap_T1.log"
+    a.write_text("(1700000000.000000) can0 308#0102\n(1700000000.500000) can0 312#0304\n", encoding="utf-8")
+    b.write_text("(1700000001.000000) can0 308#0506\n(1700000001.250000) can0 312#0708\n", encoding="utf-8")
+    assert session_chunks(b) == [a, b]
+    load = load_for_replay(session_chunks(a))
+    ts = [m.timestamp for m in load.messages]
+    assert [round(t - 1700000000.0, 6) for t in ts] == [0.0, 0.5, 1.0, 1.25]
+
+
+def _app_trc(path, t0, frames):
+    with TRCWriter(str(path), zone="America/Los_Angeles") as w:
+        for dt, aid in frames:
+            w.on_message_received(can.Message(timestamp=t0 + dt, arbitration_id=aid, data=b"\x01\x02",
+                                              is_extended_id=False, channel=0))
+
+
+def test_app_trc_segments_chain_on_their_utc_starts():
+    d = _dir()
+    t0 = 1794586450.0
+    _app_trc(d / "coda_20261113_085410_T0.trc", t0, [(0.0, 0x308), (0.010, 0x312)])
+    _app_trc(d / "coda_20261113_085410_T1.trc", t0 + 60.0, [(0.0, 0x308), (0.020, 0x312)])
+    (d / "coda_20261113_085410_M1_T0.trc").write_text(
+        (d / "coda_20261113_085410_T0.trc").read_text(encoding="utf-8"), encoding="utf-8")
+    files = session_chunks(d / "coda_20261113_085410_T1.trc")
+    assert [p.name for p in files] == ["coda_20261113_085410_T0.trc", "coda_20261113_085410_T1.trc"]
+    load = load_for_replay(files, raw_channel=True)
+    got = [round(m.timestamp - t0, 3) for m in load.messages]
+    assert got == [0.0, 0.01, 60.0, 60.02], got
+
+
+def test_mixed_utc_and_local_starts_refused():
+    d = _dir()
+    _app_trc(d / "x_T0.trc", 1794586450.0, [(0.0, 0x308)])
+    (d / "x_T1.trc").write_text(""";$FILEVERSION=2.1
+;$STARTTIME=45000.25
+;$COLUMNS=N,O,T,B,I,d,R,L,D
+       1       100.000 DT 1     0308 Rx - 2    01 02
+""", encoding="utf-8")
+    msg = _raises(load_for_replay, [d / "x_T0.trc", d / "x_T1.trc"])
+    assert "mix utc and local" in msg and "x_T0.trc: utc" in msg and "x_T1.trc: local" in msg
+
+
+def test_several_files_need_a_start():
+    d = _dir()
+    a, b = d / "a_T0.csv", d / "a_T1.csv"
+    for p in (a, b):
+        p.write_text("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2\n100,00000308,false,Rx,0,2,01,02\n"
+                     "200,00000308,false,Rx,0,2,01,02\n", encoding="utf-8")
+    msg = _raises(load_for_replay, [a, b])
+    assert "capture start is unknown" in msg and "a_T0.csv" in msg
 
 
 if __name__ == "__main__":

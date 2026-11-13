@@ -1,10 +1,13 @@
 """Base types and interfaces for CAN log parsers."""
 from __future__ import annotations
 
+import calendar
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 
 @dataclass(slots=True)
@@ -81,8 +84,72 @@ class CANEvent:
         return f"CANEvent(t={self.timestamp:.4f} bus={self.bus} {self.kind}{aid} {data_hex}{txt})"
 
 
+UTC = "utc"
+LOCAL = "local"
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureStart:
+    """When a capture started, as its file states it.
+
+    ``basis`` says what the file's digits mean:
+
+    - ``"utc"``: the instant is known (a candump epoch, a TRC written by
+      canbench or the Android loggers, whose ``$STARTTIME`` is UTC by the owner's
+      ruling of 2026-11-13).
+    - ``"local"``: wall-clock digits with no zone (a BUSMASTER header, a TRC
+      written by PEAK's tools, a Vector ASC ``date`` line). The instant needs
+      the recording machine's zone, which only the caller can supply.
+
+    ``wall`` is the date and time as written, naive and exact to the
+    microsecond: local digits for ``local``, UTC digits for ``utc``.
+    ``seconds`` is ``wall`` read as if it were UTC (``calendar.timegm``): the
+    epoch itself for ``utc``; for ``local``, a number that orders and spaces
+    captures from one machine correctly but is off from the true epoch by that
+    machine's UTC offset. ``zone`` is the IANA zone name when the file states
+    one (the TRC ``Start time (local)`` comment), else None. ``source`` names
+    what the start was read from.
+    """
+    seconds: float
+    basis: str
+    wall: datetime
+    zone: str | None = None
+    source: str = ""
+
+    def instant_ns(self, tz=None) -> int:
+        """The start as integer epoch nanoseconds (exact: whole seconds from the
+        zone conversion plus the microseconds as an integer).
+
+        ``tz`` (a tzinfo or an IANA name) is required for a ``local`` start and
+        ignored for a ``utc`` one: a UTC start is never shifted by a zone.
+        """
+        if self.basis == UTC:
+            tzinfo = timezone.utc
+        elif tz is None:
+            raise ValueError(f"a local start ({self.source}) needs the recording machine's zone")
+        else:
+            tzinfo = ZoneInfo(tz) if isinstance(tz, str) else tz
+        whole = self.wall.replace(microsecond=0, tzinfo=tzinfo)
+        return int(whole.timestamp()) * 1_000_000_000 + self.wall.microsecond * 1000
+
+    def instant(self, tz=None) -> float:
+        """:meth:`instant_ns` as float epoch seconds."""
+        return self.instant_ns(tz) / 1e9
+
+
+def wall_start(basis: str, wall: datetime, source: str, zone: str | None = None) -> CaptureStart:
+    """A :class:`CaptureStart` from its naive wall-clock datetime."""
+    seconds = calendar.timegm(wall.timetuple()[:6]) + wall.microsecond / 1e6
+    return CaptureStart(seconds, basis, wall, zone, source)
+
+
 class BaseParser(ABC):
     """Abstract base class for CAN log file parsers."""
+
+    def start(self, path: Path | str) -> CaptureStart | None:
+        """When the capture in *path* started, or None if the format (or this
+        file) does not say. Formats that can tell override this."""
+        return None
 
     @staticmethod
     @abstractmethod

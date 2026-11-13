@@ -9,11 +9,13 @@ Rules (owner ruling 4, reverse-it ``tools/plans/can-replay-readers.md`` step 5):
 
 - **Format by content.** BUSMASTER and PEAK TRC are read by ``canbench.parsers``;
   everything else by ``logio.read_messages`` (python-can by extension, SavvyCAN CSV).
-- **BUSMASTER ``_T`` chunks chain** on each chunk's ``***START DATE AND TIME***``
-  header (date and time): a chunk's frames keep their spacing relative to its first
-  frame, which is placed at the header start (``logio.busmaster_start``), so a session
-  crossing midnight stays in order. Several files without that header are refused:
-  there is nothing to chain them on.
+- **``_T`` segments chain** on each segment's capture start (``logio.capture_start``:
+  the BUSMASTER header, TRC ``$STARTTIME``, candump's first epoch, the ASC ``date``
+  line): a segment's frames keep their spacing relative to its first record, which is
+  placed at its start, so a session crossing midnight stays in order. Several files are
+  refused when one has no start (nothing to chain it on), or when they mix a ``utc``
+  start with a ``local`` one (an app TRC with a PEAK TRC: the offset between them is
+  the recording machine's zone, which the files do not give).
 - **Buses by anchors.** ``vehicle`` + a bus name resolves every file on its own
   (a logger can renumber a bus between chunks) and keeps the channels named that
   bus. A file whose anchors do not separate raises instead of guessing.
@@ -40,7 +42,7 @@ from canbench.live.vehicle_configs import (
 )
 from canbench.parsers import CANEvent, CANFrame, detect_format, parse_file
 from canbench.parsers.busmaster import BusmasterParser
-from canbench.parsers.peak_trc import PeakTrcParser, start_time
+from canbench.parsers.peak_trc import PeakTrcParser
 
 _CHUNK_RE = re.compile(r"^(?P<prefix>.+_T)(?P<n>\d+)$")
 
@@ -171,8 +173,20 @@ def load_for_replay(paths, *, vehicle: Optional[str] = None, bus=None,
         raise ReplayInputError("all input files must be one format")
     kind = kinds.pop()
     own = kind in (BusmasterParser, PeakTrcParser)
-    if len(files) > 1 and kind is not BusmasterParser:
-        raise ReplayInputError("several files are joined only for BUSMASTER _T chunks")
+    starts = {p: logio.capture_start(p) for p in files}
+    if len(files) > 1:
+        missing = [p.name for p, st in starts.items() if st is None]
+        if missing:
+            raise ReplayInputError(
+                f"cannot chain files whose capture start is unknown: {', '.join(missing)} "
+                f"(several files are joined only as _T segments of a format that states its "
+                f"start: BUSMASTER, TRC, candump, Vector ASC)")
+        bases = sorted({st.basis for st in starts.values()})
+        if len(bases) > 1:
+            listing = ", ".join(f"{p.name}: {st.basis}" for p, st in starts.items())
+            raise ReplayInputError(
+                f"cannot chain files that mix utc and local capture starts ({listing}): the "
+                f"offset between them is the recording machine's zone, which the files do not give")
     if own and bus is not None and not _is_bus_name(bus) and not raw_channel:
         raise ReplayInputError(
             f"--bus {bus} is a channel number, and in a BUSMASTER/TRC capture that is dongle "
@@ -184,17 +198,9 @@ def load_for_replay(paths, *, vehicle: Optional[str] = None, bus=None,
 
     if own:
         load.fmt = "busmaster" if kind is BusmasterParser else "trc"
-        bases = {}
-        if kind is BusmasterParser:
-            for p in files:
-                bases[p] = logio.busmaster_start(p)
-            if len(files) > 1 and any(b is None for b in bases.values()):
-                missing = [p.name for p, b in bases.items() if b is None]
-                raise ReplayInputError(
-                    f"cannot chain chunks without a START DATE AND TIME header: {', '.join(missing)}")
         for p in files:
             frames = []
-            base = (bases[p] if kind is BusmasterParser else start_time(p)) or 0.0
+            base = starts[p].seconds if starts[p] else 0.0
             for rec in parse_file(p, include_events=True, mark_inferred_errors=True):
                 if isinstance(rec, CANEvent):
                     load.events[rec.kind] += 1
@@ -207,13 +213,22 @@ def load_for_replay(paths, *, vehicle: Optional[str] = None, bus=None,
             per_file.append((p, base, frames))
     else:
         load.fmt = files[0].suffix.lower().lstrip(".") or "unknown"
-        frames = []
-        for msg in logio.read_messages(files[0]):
-            if msg.is_error_frame:
-                load.error_frames += 1
-                continue
-            frames.append(msg)
-        per_file.append((files[0], 0.0, frames))
+        for p in files:
+            frames = []
+            first = None
+            for msg in logio.read_messages(p):
+                if first is None:
+                    first = msg.timestamp
+                if msg.is_error_frame:
+                    load.error_frames += 1
+                    continue
+                frames.append(msg)
+            if len(files) > 1 and first is not None:
+                # One file keeps its timestamps as read; a segment is placed at its start.
+                shift = starts[p].seconds - first
+                for msg in frames:
+                    msg.timestamp += shift
+            per_file.append((p, 0.0, frames))
 
     def chan(fr):
         return fr.bus if isinstance(fr, CANFrame) else logio.channel_bus_id(fr.channel)

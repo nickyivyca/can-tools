@@ -54,7 +54,7 @@ dongle insertion order. Identify buses by content.
 Every `parse_file` yields frames; none returns a list. A second pass over the same result sees **nothing**, with no error. The usual trap is a bus-identification pass followed by an analysis pass: the second one comes back empty and reads as "the ID is absent". If you need more than one pass, materialise it first: `frames = list(parse_file(path))`. Found 2026-10-26, when an HVAC scratchpad reported every ID, its bus anchors included, as missing from all 20 captures.
 
 ## base.py — Core Data Types
-*Source last modified: 2026-11-13 11:46:18*
+*Source last modified: 2026-11-13 13:44:40*
 
 ### `CANFrame` dataclass
 
@@ -91,6 +91,28 @@ class BaseParser(ABC):
 
 - `detect(lines)` — given the first few lines of a file, returns True if this parser can handle it
 - `parse_file(path, absolute=False)` — parse the file, yielding CANFrame objects (a generator, not a list). When `absolute=True`, timestamps are not zeroed to the first frame (needed for stitching T-chunk files that share a timeline)
+- `start(path) -> CaptureStart | None` — when the capture started, as the file states it; None by default. BUSMASTER, PEAK TRC, candump and Vector ASC implement it (sections below). Call it through `canbench.logio.capture_start(path)`, which detects the format first.
+
+### `CaptureStart` dataclass (added 2026-11-13, reverse-it `tools/plans/trc-readers.md` step 1)
+
+```python
+@dataclass(frozen=True, slots=True)
+class CaptureStart:
+    seconds: float      # wall read as if UTC (calendar.timegm): the epoch for "utc"
+    basis: str          # "utc" | "local"
+    wall: datetime      # naive date and time as written, exact to the microsecond
+    zone: str | None    # IANA zone name when the file states one
+    source: str         # what it was read from
+
+    def instant_ns(self, tz=None) -> int: ...   # exact integer epoch ns
+    def instant(self, tz=None) -> float: ...
+```
+
+- **`utc`**: the instant is known. candump (first frame's epoch); a TRC written by canbench's `TRCWriter` or the Android loggers (`$STARTTIME` is UTC, owner ruling 2026-11-13).
+- **`local`**: wall-clock digits with no zone. BUSMASTER header, PEAK-written TRC, Vector ASC `date` line. `seconds` orders and spaces captures from one machine correctly but is off from the epoch by that machine's UTC offset; `instant_ns(tz)` needs the zone (a tzinfo or an IANA name) and raises `ValueError` without it.
+- A `utc` start ignores `tz`: it is never shifted by a zone.
+- `instant_ns` is whole seconds from the zone conversion plus the microseconds as an integer, so it has no float rounding.
+- `wall_start(basis, wall, source, zone=None)` builds one from a naive datetime.
 
 ### `CANEvent` dataclass
 
@@ -134,7 +156,7 @@ no counters. A writer should follow the spec (2 bytes).
 ---
 
 ## busmaster.py — BUSMASTER `.log` Parser
-*Source last modified: 2026-11-13 11:46:18*
+*Source last modified: 2026-11-13 13:45:10*
 
 **Changed 2026-10-28 — error-frame (`ERR`) lines.** The Android logger now writes the
 adapter's CAN error frames as `HH:MM:SS:TTTT Rx <ch> 0x<class mask> ERR <dlc> <bytes>`
@@ -205,6 +227,10 @@ Returns `True` if any sample line matches `***BUSMASTER` or `***PROTOCOL CAN***`
 
 Streams through a BUSMASTER log, yielding one `CANFrame` per data line. Skips header/metadata lines (those starting with `***`), and `ERR` error-frame lines unless asked for: `include_events=True` yields them as `CANEvent(kind="ERR")`, the form every parser uses for non-frame lines; `include_errors=True` yields them as `CANFrame(is_error=True)`, the older form kept for existing callers (see the 2026-10-28 note above). `include_events` wins if both are given.
 
+#### `start(path)` / `header_start(path) -> CaptureStart | None` (module function)
+
+The `***START DATE AND TIME DD:MM:YYYY HH:MM:SS:mmm***` header, searched in the first 64 lines, as a `local` start. The trailing field is **milliseconds** (data lines are 0.1 ms ticks); a value of 1000 or more is taken modulo 1000. Day, month, hour, minute and second may be one digit: BUSMASTER does not zero-pad (`17:1:2026 0:1:30:217`). None when there is no header or its date is invalid. `canbench.logio.busmaster_start` returns its `seconds`; before 2026-11-13 it required two-digit fields and returned None for 349 of the 4,101 corpus headers (checked on the owner's capture library; the other 3,752 give the same value as before).
+
 #### `channel_adapters(path) -> dict[int, str]` (module function)
 
 Adapter name per channel from the header, e.g. `{1: "Innomaker"}` for the Android logger's `***CHANNEL 1 - Innomaker - 500000 bps***`. Empty if the header names none.
@@ -228,7 +254,7 @@ Adapter name per channel from the header, e.g. `{1: "Innomaker"}` for the Androi
 ---
 
 ## candump.py — candump / SocketCAN Parser
-*Source last modified: 2026-10-31 01:04:11*
+*Source last modified: 2026-11-13 13:45:30*
 
 Parser for `candump` (SocketCAN) log format. Each line has the form `(epoch.usec) canX ID#DATA`.
 
@@ -256,10 +282,14 @@ Returns `True` if at least 2 non-comment lines match the candump pattern `(times
 
 **Caveat:** `is_tx` is always `False` — candump does not distinguish Tx from Rx.
 
+#### `start(path)` / `first_frame_start(path) -> CaptureStart | None` (module function)
+
+The first data line's `(epoch)` in the first 64 lines, as a `utc` start. `seconds` is the timestamp parsed as a float; `wall` comes from the digits, exact to the microsecond.
+
 ---
 
 ## peak_trc.py — PEAK PCAN TRC Parser
-*Source last modified: 2026-11-13 11:45:00*
+*Source last modified: 2026-11-13 13:45:16*
 
 Parser for PEAK PCAN Trace (`.trc`) log files, versions 1.0 to 2.1, written against PEAK-System's "PEAK CAN TRC File Format" (edition 2025-08-04). Version 3.0 files are read for their CAN and CAN FD lines. The version comes from `;$FILEVERSION=`; a file without it is 1.0.
 
@@ -295,9 +325,13 @@ Returns `True` if any line matches `;$FILEVERSION=X.X`. Fallback: returns `True`
 
 **Skipped lines:** remote requests (`RR`, `RTR`), CAN XL frames and lines that do not parse; each is counted in the parser's `skipped` Counter after a full pass.
 
+#### `start(path)` / `trc_start(path) -> CaptureStart | None` (module function)
+
+`;$STARTTIME` (days since 1899-12-30) as a start; None if the header has none. **Basis `utc`** when the header has a `;   Start time (local):` comment: canbench's `TRCWriter` and the Android loggers write it, and their `$STARTTIME` is UTC (owner ruling 2026-11-13); the comment's IANA zone name, when given, is the start's `zone`. **Otherwise `local`**: PEAK's recorders write the recording machine's local time (their spec). `seconds` is `(days - 25569) * 86400` either way.
+
 #### `start_time(path) -> float | None` (module function)
 
-Unix time of `;$STARTTIME` (days since 1899-12-30), taken as UTC. **Owner ruling 2026-11-13: `$STARTTIME` is UTC** in the files canbench's `TRCWriter` and the Android loggers write, so for those it is the true epoch. PEAK's recorders write local time there (their spec), so for a PEAK file the absolute value is off by the recorder's UTC offset; deltas are exact either way.
+`trc_start(path).seconds`: the epoch for a canbench or Android file, the local digits read as UTC for a PEAK file (off by the recorder's UTC offset); deltas are exact either way.
 
 #### `start_local(path) -> (datetime, zone or None) | None` (module function)
 
@@ -339,7 +373,7 @@ Auto-detects header vs headerless by checking if the first non-empty line starts
 ---
 
 ## vector_asc.py — Vector CANalyzer ASC Parser
-*Source last modified: 2026-03-05 13:35:56*
+*Source last modified: 2026-11-13 13:45:30*
 
 Parser for Vector CANalyzer / CANdb++ `.asc` log files. Used by CODACAN and other
 Vector-based loggers.
@@ -371,6 +405,10 @@ unless `absolute=True`.
 **Skipped lines:** Header lines (`date`, `base`, `no internal events`, `//`, `begin`,
 `end`) and any line not matching the data line pattern. Remote frames (`r`) and error
 frames are silently skipped.
+
+#### `start(path)` / `date_start(path) -> CaptureStart | None` (module function)
+
+The `date Sat Mar 08 04:14:24 PM 2025` header line in the first 64 lines, as a `local` start: 12- or 24-hour, with or without fractional seconds, English day and month names. None if absent or not in one of those forms.
 
 ---
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """CAN log replayer - plays back a captured log file through connected CAN hardware.
 
-Reads the format by content (``canbench.replay``): BUSMASTER (including a session's
-``_T`` chunks, chained on their headers) and PEAK TRC through ``canbench.parsers``;
+Reads the format by content (``canbench.replay``): BUSMASTER and PEAK TRC through
+``canbench.parsers``; a session's ``_T`` segments are chained on their capture starts
+(BUSMASTER header, TRC ``$STARTTIME``, candump first epoch, ASC ``date``);
 candump/SocketCAN ``.log``, Vector ``.asc`` / ``.blf``, CSV and SavvyCAN through
 python-can. Frames go out through connected dongles at the original timing.
 
@@ -194,12 +195,13 @@ def main():
         'logfile',
         nargs='+',
         help='Log file(s): BUSMASTER, PEAK TRC, candump/SocketCAN .log, Vector .asc/.blf, '
-             'CSV, SavvyCAN (format by content). Several files: BUSMASTER _T chunks of one session'
+             'CSV, SavvyCAN (format by content). Several files: _T segments of one session, in a format '
+             'that states its start (BUSMASTER, TRC, candump, ASC)'
     )
     parser.add_argument(
         '--session',
         action='store_true',
-        help='Expand a BUSMASTER _T<n> chunk to every chunk of its session'
+        help='Expand a _T<n> segment to every segment of its session (same extension; _M sessions not joined)'
     )
     parser.add_argument(
         '--vehicle',

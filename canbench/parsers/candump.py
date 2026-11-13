@@ -25,11 +25,12 @@ Key details:
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from collections import Counter
 from typing import Iterator
 
-from .base import BaseParser, CANEvent, CANFrame
+from .base import UTC, BaseParser, CANEvent, CANFrame, CaptureStart
 
 CAN_ERR_FLAG = 0x20000000
 CAN_EFF_MASK = 0x1FFFFFFF
@@ -63,8 +64,33 @@ def _hex_string_to_bytes(hex_str: str) -> bytes:
     return bytes.fromhex(hex_str)
 
 
+_START_LINES = 64
+
+
+def first_frame_start(path: Path | str) -> CaptureStart | None:
+    """The first line's ``(epoch)`` as a ``utc`` :class:`CaptureStart` (searched in the
+    first 64 lines), or None. ``seconds`` is the timestamp as written, parsed as a float;
+    ``wall`` is exact to the microsecond (from the digits, not the float)."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh):
+            if i >= _START_LINES:
+                break
+            m = _LINE_RE.match(line.strip())
+            if m:
+                ts = m.group(1)
+                whole, frac = ts.split(".")
+                wall = (datetime(1970, 1, 1) + timedelta(seconds=int(whole),
+                                                         microseconds=int(frac[:6].ljust(6, "0"))))
+                return CaptureStart(float(ts), UTC, wall, None, "candump first frame epoch")
+    return None
+
+
 class CandumpParser(BaseParser):
     """Parser for candump / SocketCAN log files."""
+
+    def start(self, path: Path | str) -> CaptureStart | None:
+        """See :func:`first_frame_start`."""
+        return first_frame_start(path)
 
     def __init__(self) -> None:
         self.skipped: Counter = Counter()

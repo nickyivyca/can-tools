@@ -21,10 +21,11 @@ Key details:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANFrame
+from .base import LOCAL, BaseParser, CANFrame, CaptureStart, wall_start
 
 # Data line: <timestamp> <channel> <id> <dir> d <dlc> [bytes...]
 # Handles both standard and CODACAN-style ASC.
@@ -43,8 +44,39 @@ _LINE_RE = re.compile(
 _HEADER_MARKERS = ("base hex", "base dec", "date ", "no internal events")
 
 
+_DATE_FORMATS = ("%a %b %d %I:%M:%S.%f %p %Y", "%a %b %d %I:%M:%S %p %Y",
+                 "%a %b %d %H:%M:%S.%f %Y", "%a %b %d %H:%M:%S %Y")
+_START_LINES = 64
+
+
+def date_start(path: Path | str) -> CaptureStart | None:
+    """The ``date Sat Mar 08 04:14:24 PM 2025`` header line as a ``local``
+    :class:`CaptureStart` (12- or 24-hour, with or without fractional seconds; English
+    day and month names), searched in the first 64 lines; None if absent or unparsed."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh):
+            if i >= _START_LINES:
+                break
+            s = line.strip()
+            if not s.lower().startswith("date "):
+                continue
+            text = " ".join(s.split()[1:])
+            for fmt in _DATE_FORMATS:
+                try:
+                    wall = datetime.strptime(text, fmt)
+                except ValueError:
+                    continue
+                return wall_start(LOCAL, wall, "Vector ASC date header")
+            return None
+    return None
+
+
 class VectorAscParser(BaseParser):
     """Parser for Vector CANalyzer ASC log files."""
+
+    def start(self, path: Path | str) -> CaptureStart | None:
+        """See :func:`date_start`."""
+        return date_start(path)
 
     @staticmethod
     def detect(lines: list[str]) -> bool:

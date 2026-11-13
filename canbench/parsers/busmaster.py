@@ -13,10 +13,11 @@ BUSMASTER log format (v3.x):
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from .base import BaseParser, CANEvent, CANFrame, id_filter_sets
+from .base import LOCAL, BaseParser, CANEvent, CANFrame, CaptureStart, id_filter_sets, wall_start
 
 # Matches a BUSMASTER data line (not a header/metadata line).
 # Groups: timestamp, tx/rx, channel, id, type, dlc, remaining data bytes
@@ -153,8 +154,40 @@ def channel_adapters(path: Path | str) -> dict[int, str]:
     return out
 
 
+# ***START DATE AND TIME DD:MM:YYYY HH:MM:SS:mmm*** for start(). The trailing field is
+# MILLISECONDS (across 1,062 corpus headers it never exceeds 998, reverse-it
+# canre/utils/timebase.py), while data-line timestamps are 0.1 ms ticks. BUSMASTER does not
+# zero-pad ("12:2:2025 16:51:57:846", "17:1:2026 0:1:30:217").
+_HEADER_START_RE = re.compile(
+    r"START DATE AND TIME\s+(\d{1,2}):(\d{1,2}):(\d{4})\s+"
+    r"(\d{1,2}):(\d{1,2}):(\d{1,2}):(\d+)", re.IGNORECASE)
+_HEADER_START_LINES = 64
+
+
+def header_start(path: Path | str) -> CaptureStart | None:
+    """The ``***START DATE AND TIME***`` header as a ``local`` :class:`CaptureStart`
+    (searched in the first 64 lines), or None if there is none or its date is invalid."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh):
+            if i >= _HEADER_START_LINES:
+                break
+            m = _HEADER_START_RE.search(line)
+            if m:
+                dd, mo, yy, hh, mi, ss, ms = (int(g) for g in m.groups())
+                try:
+                    wall = datetime(yy, mo, dd, hh, mi, ss, (ms % 1000) * 1000)
+                except ValueError:
+                    return None
+                return wall_start(LOCAL, wall, "BUSMASTER START DATE AND TIME header")
+    return None
+
+
 class BusmasterParser(BaseParser):
     """Parser for BUSMASTER CAN log files."""
+
+    def start(self, path: Path | str) -> CaptureStart | None:
+        """The header start, ``local`` basis (the logging PC's wall clock, no zone)."""
+        return header_start(path)
 
     @staticmethod
     def detect(lines: list[str]) -> bool:

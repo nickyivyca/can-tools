@@ -21,14 +21,12 @@ or SavvyCAN CSV -- formats python-can has no reader for -- is read through
 before. This matters for ``.log``, which BUSMASTER and candump share: python-can
 alone would parse a BUSMASTER ``.log`` as candump and fail.
 """
-import calendar
-import re
 from pathlib import Path
 
 import can
 
 from canbench import parsers
-from canbench.parsers.busmaster import BusmasterParser
+from canbench.parsers.busmaster import BusmasterParser, header_start
 from canbench.parsers.savvycan import SavvyCANParser
 from canbench.trcwriter import TRCWriter
 
@@ -83,11 +81,22 @@ def open_writer(path, append=False):
 # Content-detected formats read through canbench.parsers instead of python-can.
 _OWN_FORMATS = (BusmasterParser, SavvyCANParser)
 
-# ***START DATE AND TIME DD:MM:YYYY HH:MM:SS:mmm*** -- the trailing field is
-# MILLISECONDS, while BUSMASTER data-line timestamps are 0.1 ms ticks.
-_BM_START_RE = re.compile(
-    r"^\*\*\*START DATE AND TIME\s+(\d{2}):(\d{2}):(\d{4})\s+"
-    r"(\d{1,2}):(\d{2}):(\d{2}):(\d+)\*\*\*", re.IGNORECASE)
+def capture_start(path):
+    """When the capture in ``path`` started, as a ``canbench.parsers.base.CaptureStart``,
+    or None when its format does not say (or the format is not recognised).
+
+    The one entry point for a capture's start: the format is detected by content and its
+    parser reads the start. BUSMASTER (header, ``local``), PEAK TRC (``$STARTTIME``:
+    ``utc`` in files canbench and the Android loggers write, ``local`` in PEAK's), candump
+    (first frame's epoch, ``utc``), Vector ASC (``date`` header, ``local``). A ``local``
+    start needs the recording machine's zone for a true instant; a ``utc`` one is used as
+    it is (``CaptureStart.instant_ns``).
+    """
+    try:
+        parser = parsers.detect_format(path)
+    except ValueError:
+        return None
+    return parser.start(path)
 
 
 def busmaster_start(path):
@@ -95,17 +104,11 @@ def busmaster_start(path):
 
     The header is the logger's local wall-clock time with no zone, so it is
     converted as if it were UTC: consistent across machines and chunks, but not
-    a true epoch. Use ``canre.utils.timebase`` where the real instant matters.
+    a true epoch (``CaptureStart.seconds`` of a ``local`` start; see
+    :func:`capture_start`). Reads the header whatever the file's detected format.
     """
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for i, line in enumerate(fh):
-            m = _BM_START_RE.match(line.strip())
-            if m:
-                dd, mo, yy, hh, mi, ss, ms = (int(g) for g in m.groups())
-                return calendar.timegm((yy, mo, dd, hh, mi, ss)) + ms / 1000.0
-            if i > 40:
-                return None
-    return None
+    st = header_start(path)
+    return st.seconds if st else None
 
 
 def detect_reader(path):
