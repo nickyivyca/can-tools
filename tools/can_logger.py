@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import can
 from canbench.live.receiver import CANBusLogger, detect_all_can_interfaces
 from canbench import logio, buses
+from canbench.buses import open_bus
 from canbench.passthrough import PassthroughBridge
 from canbench.live.clock import FrameClock
 
@@ -137,6 +138,16 @@ def main():
              'frame tagged by the bus it was sourced on.'
     )
     parser.add_argument(
+        '--udp-multicast',
+        action='append',
+        default=[],
+        metavar='GROUP',
+        help='Log a localhost network CAN bus (python-can udp_multicast) on GROUP or GROUP:PORT '
+             '(default port 43113) instead of detected hardware; repeat for several buses (can0, '
+             'can1, ... in order), each on its own port. '
+             'Always opened with hop limit 0 and checked, so frames stay on this host.'
+    )
+    parser.add_argument(
         '--debug',
         action='store_true',
         help='Enable debug logging'
@@ -185,7 +196,14 @@ def main():
 
     # Detect all CAN interfaces
     logger.info("Detecting CAN interfaces...")
-    interfaces = detect_all_can_interfaces(args.bitrate, brands=brands_filter)
+    if args.udp_multicast:
+        try:
+            interfaces = buses.udp_adapters(args.udp_multicast)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+    else:
+        interfaces = detect_all_can_interfaces(args.bitrate, brands=brands_filter)
 
     if not interfaces:
         logger.error("No CAN interfaces detected!")
@@ -211,10 +229,7 @@ def main():
     try:
         for bus_id, (iface, ch, desc) in enumerate(interfaces):
             try:
-                if isinstance(ch, dict):
-                    bus = can.interface.Bus(interface=iface, bitrate=args.bitrate, **ch)
-                else:
-                    bus = can.interface.Bus(interface=iface, channel=ch, bitrate=args.bitrate)
+                bus = open_bus(iface, ch, args.bitrate)
                 bus_logger = CANBusLogger(bus_id, bus, message_queue, iface, ch, args.bitrate)
                 buses.append(bus_logger)
                 logger.info(f"Created bus {bus_id}: {desc}")

@@ -230,10 +230,8 @@ class CANBusLogger:
         for attempt in range(1, max_open_attempts + 1):
             logger.info(f"Bus {self.bus_id}: open attempt {attempt}/{max_open_attempts}...")
             try:
-                if isinstance(self.ch, dict):
-                    new_bus = can.interface.Bus(interface=self.iface, bitrate=self.bitrate, **self.ch)
-                else:
-                    new_bus = can.interface.Bus(interface=self.iface, channel=self.ch, bitrate=self.bitrate)
+                from canbench.buses import open_bus
+                new_bus = open_bus(self.iface, self.ch, self.bitrate)
                 self.bus = new_bus
                 logger.info(f"Bus {self.bus_id}: reconnected successfully")
                 return

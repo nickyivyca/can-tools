@@ -102,6 +102,22 @@ or `gs_usb:serial:<s>` only on that backend, and a pin to the wrong backend is
 refused with the reason. Innomakers can be on both backends at once: detection
 lists each libusb one (opened by USB bus and address) beside the SocketCAN ones.
 
+**Localhost replay, no hardware:** `--udp-multicast GROUP[:PORT]` on both the replayer and
+the logger uses python-can's `udp_multicast` bus instead of detected adapters, e.g.
+
+```bash
+python tools/can_logger.py --udp-multicast 239.99.0.11:47811 --udp-multicast 239.99.0.12:47812 -o cap.trc
+python tools/can_replayer.py coda.log --vehicle coda --udp-multicast 239.99.0.11:47811 \
+    --udp-multicast 239.99.0.12:47812 --adapter d_can=udp:239.99.0.11 --adapter b_can=udp:239.99.0.12
+```
+
+Every bus can-tools opens goes through `canbench.buses.open_bus`, which opens a
+`udp_multicast` bus with hop limit 0 and reads it back (`confine_to_host`), refusing to
+start otherwise: python-can's default of 1 puts every frame on the LAN, which flooded
+the house network on 2026-09-01. Give each bus its own port: python-can binds every
+socket to its port on all addresses, so two groups on one port hear each other's frames,
+and the tools refuse a shared port.
+
 See `tools/README-can_logger.md` for the logger's hardware handling and ixxat
 overflow recovery.
 

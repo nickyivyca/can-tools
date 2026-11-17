@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from canbench import replay
-from canbench.buses import shutdown_bus
+from canbench.buses import open_bus, shutdown_bus, udp_adapters
 from canbench.live.vehicle_configs import VEHICLES
 from canbench.live.receiver import detect_all_can_interfaces
 
@@ -88,10 +88,7 @@ def open_buses(interfaces, bitrate):
     buses = []
     for iface, ch, desc in interfaces:
         try:
-            if isinstance(ch, dict):
-                bus = can.interface.Bus(interface=iface, bitrate=bitrate, **ch)
-            else:
-                bus = can.interface.Bus(interface=iface, channel=ch, bitrate=bitrate)
+            bus = open_bus(iface, ch, bitrate)
             buses.append((bus, desc))
             logger.info(f"Opened {desc}")
         except Exception as e:
@@ -236,6 +233,15 @@ def main():
              'whenever two or more adapters are detected.'
     )
     parser.add_argument(
+        '--udp-multicast',
+        action='append',
+        default=[],
+        metavar='GROUP',
+        help='Send on a localhost network CAN bus (python-can udp_multicast) on GROUP or GROUP:PORT '
+             '(default port 43113) instead of detected hardware; repeat for several, each on its own '
+             'port, and pin buses with --adapter BUS=udp:GROUP. Always opened with hop limit 0 and checked, so frames stay on this host.'
+    )
+    parser.add_argument(
         '--speed', '-s',
         type=float,
         default=1.0,
@@ -317,7 +323,14 @@ def main():
 
     # --- Detect dongles ---
     logger.info("Detecting CAN interfaces...")
-    interfaces = detect_all_can_interfaces(args.bitrate, brands=brands_filter)
+    if args.udp_multicast:
+        try:
+            interfaces = udp_adapters(args.udp_multicast)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+    else:
+        interfaces = detect_all_can_interfaces(args.bitrate, brands=brands_filter)
 
     if not interfaces:
         logger.error("No CAN interfaces detected!")
