@@ -36,6 +36,13 @@ id columns) before the full parse, which is the point of passing `ids` on large 
 Other formats raise `NotImplementedError`. Contract: `canbench.parsers.base.id_filter_sets`;
 tests: `tests/test_parsers_id_filter.py`.
 
+**Scope: correctly written files only** (owner ruling 2026-11-16): "we need to only read correctly written
+files, but we still need to also correctly write files ourselves. What we will not do is put edge cases in our
+reader for our or other folks mistakes." Each reader implements its format as specified and carries no workaround
+for a writer's bug, another tool's or canbench's own (e.g. PCAN-Basic's 1969 `$STARTTIME` under a RAW-timestamp
+build of the library, or captures canbench wrote before a fix). Such files are corrected outside the reader, or
+not read. canbench's own writers (`trcwriter`, `logio.open_writer`) must write correct files.
+
 > **Staleness check:** Each section shows a `Source last modified` timestamp. If the `.py` file's mtime is newer than the timestamp shown here, re-read the source before relying on this documentation. Timestamps MUST include both date and time (`YYYY-MM-DD HH:MM:SS`).
 
 ## COMMON MISTAKES
