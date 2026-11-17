@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import can
 from canbench.live.receiver import CANBusLogger, detect_all_can_interfaces
 from canbench import logio, buses
-from canbench.buses import open_bus
+from canbench.buses import open_bus, udp_adapters
 from canbench.passthrough import PassthroughBridge
 from canbench.live.clock import FrameClock
 
@@ -198,7 +198,7 @@ def main():
     logger.info("Detecting CAN interfaces...")
     if args.udp_multicast:
         try:
-            interfaces = buses.udp_adapters(args.udp_multicast)
+            interfaces = udp_adapters(args.udp_multicast)
         except ValueError as e:
             logger.error(str(e))
             sys.exit(1)
