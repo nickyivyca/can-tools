@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import can  # noqa: E402
 
-from canbench.replay import ReplayInputError, load_for_replay, session_chunks  # noqa: E402
+from canbench.replay import ReplayInputError, load_for_replay, parse_window, session_chunks, window  # noqa: E402
 from canbench.trcwriter import TRCWriter  # noqa: E402
 
 
@@ -227,6 +227,27 @@ def test_several_files_need_a_start():
                      "200,00000308,false,Rx,0,2,01,02\n", encoding="utf-8")
     msg = _raises(load_for_replay, [a, b])
     assert "capture start is unknown" in msg and "a_T0.csv" in msg
+
+
+def test_window_parse_and_cut():
+    assert parse_window("12.5:40") == (12.5, 40.0)
+    assert parse_window("30:") == (30.0, float("inf"))
+    for bad in ("40", "40:12", "-1:5", "a:b", "5:5"):
+        try:
+            parse_window(bad)
+        except ReplayInputError:
+            continue
+        raise AssertionError(f"accepted {bad!r}")
+    msgs = [can.Message(timestamp=1000.0 + i * 0.25, arbitration_id=i, data=b"") for i in range(40)]
+    got = window(msgs, 2.0, 3.0)                  # t - t0 in [2.0, 3.0): i = 8..11
+    assert [m.arbitration_id for m in got] == [8, 9, 10, 11], [m.arbitration_id for m in got]
+    assert [m.arbitration_id for m in window(msgs, 9.5, float("inf"))] == [38, 39]
+    try:
+        window(msgs, 20.0, 30.0)
+    except ReplayInputError as e:
+        assert "9.8 s long" in str(e), e
+    else:
+        raise AssertionError("an empty window was accepted")
 
 
 if __name__ == "__main__":

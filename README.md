@@ -78,6 +78,9 @@ python tools/can_replayer.py capture.log
 
 # Replay one bus of a BUSMASTER session, every _T chunk, chosen by anchor ids
 python tools/can_replayer.py coda_20261025_193221_T0.log --session --vehicle coda --bus d_can
+
+# Replay only 120 s to 200 s after the log's first frame (no cut file needed)
+python tools/can_replayer.py capture.log --window 120:200
 ```
 
 A channel number in a BUSMASTER or TRC capture is dongle insertion order, not a

@@ -19,6 +19,7 @@ from canbench.parsers import peak_trc  # noqa: E402
 from canbench.parsers.base import CANFrame  # noqa: E402
 
 GROUPS = ["239.99.0.221:47931", "239.99.0.222:47932"]
+GROUPS_W = ["239.99.0.225:47935", "239.99.0.226:47936"]
 
 
 def _candump(path, n=50):
@@ -74,6 +75,36 @@ def test_shared_port_refused_by_both_tools():
         p = subprocess.run([sys.executable, "-B"] + cmd, capture_output=True, text=True, timeout=60,
                            stdin=subprocess.DEVNULL)
         assert p.returncode == 1 and "own port" in p.stdout + p.stderr, (p.returncode, (p.stdout + p.stderr)[-400:])
+
+
+def test_replay_window_onto_localhost_bus():
+    d = Path(tempfile.mkdtemp(prefix="can-tools-udp-cli-"))
+    src, trc = d / "src.log", d / "cap.trc"
+    _candump(src)
+    udp = [x for g in GROUPS_W for x in ("--udp-multicast", g)]
+    with open(d / "logger.txt", "w") as lo:
+        lg = _run([str(ROOT / "tools/can_logger.py"), "-o", str(trc)] + udp, lo)
+        for _ in range(150):
+            if "Starting logging" in (d / "logger.txt").read_text() or lg.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert lg.poll() is None, (d / "logger.txt").read_text()[-800:]
+        with open(d / "replayer.txt", "w") as ro:
+            rp = _run([str(ROOT / "tools/can_replayer.py"), str(src), "--skip-confirmation", "--window", "0.105:0.305"]
+                      + udp + ["--adapter", f"0=udp:{GROUPS_W[0].split(':')[0]}",
+                               "--adapter", f"1=udp:{GROUPS_W[1].split(':')[0]}"], ro)
+            rc = rp.wait(timeout=60)
+        time.sleep(0.5)
+        lg.send_signal(signal.SIGINT)
+        lg.wait(timeout=30)
+    out = (d / "replayer.txt").read_text()
+    assert rc == 0 and "Window:       0.105 to 0.305 s of the log" in out, out[-800:]
+    per = {}
+    for r in peak_trc.PeakTrcParser().parse_file(trc):
+        if isinstance(r, CANFrame):
+            per.setdefault(r.bus, []).append((r.arbitration_id, bytes(r.data)))
+    assert per[1] == [(0x101, bytes([i])) for i in range(11, 31)], per[1][:3]
+    assert per[2] == [(0x202, bytes([i, 0xAA])) for i in range(11, 31)], per[2][:3]
 
 
 if __name__ == "__main__":

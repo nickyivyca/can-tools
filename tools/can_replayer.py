@@ -256,6 +256,14 @@ def main():
              'Default: replay all buses.'
     )
     parser.add_argument(
+        '--window',
+        default=None,
+        metavar='START:END',
+        help='Only replay the frames from START to END seconds after the log\'s first frame '
+             '(END may be left out). The replay starts with the window\'s first frame, and the '
+             'times in the send summary count from it.'
+    )
+    parser.add_argument(
         '--loop', '-l',
         action='store_true',
         help='Loop replay indefinitely (Ctrl+C to stop)'
@@ -311,6 +319,15 @@ def main():
     if not frames:
         logger.error("No frames found in log file.")
         sys.exit(1)
+    window_desc = None
+    if args.window:
+        try:
+            w_start, w_end = replay.parse_window(args.window)
+            frames = replay.window(frames, w_start, w_end)
+        except replay.ReplayInputError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        window_desc = f"{w_start:g} to {'end' if w_end == float('inf') else f'{w_end:g}'} s of the log"
     fmt_name = load.fmt
 
     log_channels = load.keys
@@ -366,6 +383,8 @@ def main():
             for ch in sorted(res.hits):
                 print(f"  {p.name} ch{ch}: {res.assignments.get(ch) or res.unresolved.get(ch)}"
                       f"{'' if ch in keep else '  (not replayed)'}")
+    if window_desc:
+        print(f"Window:       {window_desc}")
     print(f"Frames:       {len(frames):,}")
     print(f"Not sent:     {skipped_summary(load)}")
     print(f"Log buses:    {len(log_channels)}  (buses {', '.join(str(c) for c in log_channels)})")

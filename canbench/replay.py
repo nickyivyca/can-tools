@@ -304,6 +304,34 @@ def load_for_replay(paths, *, vehicle: Optional[str] = None, bus=None,
     return load
 
 
+def parse_window(text: str):
+    """``START:END`` (seconds after the log's first frame; END may be left out for the end of
+    the log) as ``(start, end)``. Raises ``ReplayInputError``."""
+    a, sep, b = str(text).partition(":")
+    try:
+        start = float(a)
+        end = float(b) if b.strip() else float("inf")
+    except ValueError:
+        start = end = None
+    if not sep or start is None or start < 0 or end <= start:
+        raise ReplayInputError(f"--window {text}: give START:END in seconds after the log's first "
+                               f"frame, 0 <= START < END (END may be left out)")
+    return start, end
+
+
+def window(messages, start: float, end: float):
+    """The frames of *messages* (time-ordered, as :func:`load_for_replay` gives them) whose time
+    after the first frame is in ``[start, end)``. Raises ``ReplayInputError`` when none is."""
+    if not messages:
+        return []
+    t0 = messages[0].timestamp
+    out = [m for m in messages if start <= m.timestamp - t0 < end]
+    if not out:
+        dur = messages[-1].timestamp - t0
+        raise ReplayInputError(f"--window {start:g}:{end:g} holds no frames; the log is {dur:.1f} s long")
+    return out
+
+
 class SendStats:
     """Per-bus send results of a replay, with rate-limited warnings.
 
