@@ -104,11 +104,24 @@ canbus-esp-fw-vtrux `shared/bench/SPEC.md` section 8): `canmain`, `canchg`, `can
 enumeration index, a channel number or the first of its kind found. `canbench.bench_roles` turns a
 role into a device through canctl's read-only `canctl roles` (no serials): `resolve(role)` says where
 it is and how to bring it up (netdev, USB bus and address), and `open_role(role, modes=...,
-hw_timestamps=...)` opens it, after the caller's own `canctl up` (canbench never brings a link up or
+hw_timestamps=...)` opens it, after the caller's own `canctl up` (`bench_roles` never brings a link up or
 down), refusing with the reason when the role is absent, in a mode the caller did not allow, or its
 link is down. On a bench host every detected adapter also carries a `role:<role>` id, so the CLIs take
 `can_replayer --adapter b_can=role:pcanfd --adapter d_can=role:canx2` and `can_logger --roles
 canmain,kvaser`. The serial, USB and channel ids above stay for use off the bench.
+
+**`canbench.bench_layer`, the bench-role layer** (both ESP reviewers' request, 2026-11-19; the owner allowed
+canbench to run canctl on an explicit call, behind a plugged-in guard): `set_guard(fn)` registers the caller's
+bench guard (with none, nothing here touches the bench); `link_up(role, bitrate, restart_ms=)` /
+`link_down(role)` run `sudo -n canctl up|down` and read the link back with `ip -details -json` (UP, bitrate, not
+listen-only); `set_mode` / `to_libusb` / `to_socketcan` run `canctl mode` and read the role back from `canctl
+roles`; `open_bench(role, bitrate, mode=, hw_timestamps=, restore=True)` brings the role to the caller's mode
+(defaults `DEFAULT_MODES`: pcanfd pcan, canchg and canmain libusb, kvaser socketcan), brings a SocketCAN link up,
+opens it by role, and on `shutdown()` (or a failed open) puts it back as found; `restore=False` keeps it for a
+whole run. Index, channel, USB bus / address, device id, serial and interface keywords are refused.
+`bus_error(bus, msg)` counts only bus-error classes on SocketCAN (not CRTL, BUSOFF, RESTARTED, CNT alone), every
+error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own
+test (`scan_paths`, `py_files`, `self_check`).
 
 `<interface>:serial:<s>` also names the backend. On Linux an Innomaker is either on
 the kernel's gs_usb driver (SocketCAN) or on libusb (python-can `gs_usb`), with the
@@ -151,6 +164,9 @@ canbench/
   live/clock.py  frame timestamps: the adapter's clock on the wall clock (drift, wrap)
   bench_roles.py open a bench adapter by its canctl role (canctl roles -> resolve / open_role, refusals),
                  role:<role> ids on detected adapters; shared/bench SPEC section 8 (2026-11-18)
+  bench_layer.py the bench-role layer: guard, canctl link/mode with read-back, open_bench (restore as found),
+                 pick refusals, bus-error classifier (2026-11-19)
+  bench_scan.py  the adapter-open scan a project runs on its own tree (2026-11-19)
   live/socketcan_hw.py  opt-in SocketCAN bus (SocketcanHwBus) with SO_TIMESTAMPING: each frame keeps the host
                  receive stamp (msg.timestamp) and the adapter's raw hardware stamp (msg.hw_timestamp), all
                  error classes passed; a per-open check (bus.stamp_check) that the hardware stamps are nonzero,

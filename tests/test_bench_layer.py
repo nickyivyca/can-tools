@@ -1,0 +1,544 @@
+"""canbench.bench_layer and canbench.bench_scan: the bench-role layer, on a fake canctl and a fake ``ip``.
+
+Synthetic: a stateful fake canctl (``roles``, ``up``, ``down``, ``mode``) and a fake ``ip -details -json link show``
+share one JSON state file; python-can's Bus is replaced by a recorder. No adapter is opened and no root command
+runs. Run standalone:
+    python tests/test_bench_layer.py              # the checks
+    python tests/test_bench_layer.py --can-fail   # the checks on the real modules (control), then on each mutant:
+                                                  # every mutant must make a check fail
+"""
+import importlib.util
+import json
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import can
+
+from canbench import bench_layer as L
+from canbench import bench_roles
+from canbench import bench_scan as S
+from canbench import errors as E
+
+PY = sys.executable
+
+FAKE_CANCTL = r'''
+import json, sys
+P = %(state)r
+st = json.load(open(P))
+a = sys.argv[1:]
+st["log"].append(" ".join(a))
+def save():
+    json.dump(st, open(P, "w"))
+def out(rc, msg=""):
+    save()
+    if msg:
+        print(msg)
+    sys.exit(rc)
+fail = st.get("fail", {}).get(a[0] if a else "")
+if fail:
+    out(fail, "canctl: injected failure")
+R = st["roles"]
+if a[0] == "roles":
+    for name, r in R.items():
+        print(" ".join("%%s=%%s" %% (k, r.get(k, "none")) for k in
+              ("role", "kind", "mode", "attached", "usb", "busnum", "devnum", "driver", "netdev", "link", "tty",
+               "chardev", "devid")))
+    save(); sys.exit(0)
+r = R.get(a[1]) if len(a) > 1 else None
+if r is None:
+    out(2, "canctl: unknown role")
+if a[0] == "up":
+    if r["netdev"] == "none":
+        out(2, "canctl: no netdev")
+    r["link"] = "up"; r["bitrate"] = int(a[2]); r["listen_only"] = False
+    if "restart-ms" in a:
+        r["restart_ms"] = int(a[a.index("restart-ms") + 1])
+    lie = st.get("lie", {})
+    for k, v in lie.items():
+        r[k] = v
+    out(0)
+if a[0] == "down":
+    if r["netdev"] == "none":
+        out(2, "canctl: no netdev")
+    r["link"] = "down" if not st.get("stuck_up") else "up"
+    out(0)
+if a[0] == "mode":
+    m = a[2]
+    if st.get("claimed") and m == "socketcan":
+        out(3, "canctl: bind failed")
+    r["mode"] = m
+    if st.get("stuck_mode"):
+        out(0)
+    if r["kind"] == "gs_usb":
+        if m == "libusb":
+            r.update(driver="none", netdev="none", link="none")
+        else:
+            r.update(driver="gs_usb", netdev=a[1], link="down")
+    elif r["kind"] == "kvaser":
+        if m == "linuxcan":
+            r.update(driver="leaf", netdev="none", link="none")
+        else:
+            r.update(driver="kvaser_usb", netdev="kvaser", link="down")
+    out(0)
+out(2, "canctl: usage")
+'''
+
+FAKE_IP = r'''
+import json, sys
+st = json.load(open(%(state)r))
+dev = sys.argv[-1]
+for r in st["roles"].values():
+    if r["netdev"] == dev:
+        info = {"state": "ERROR-ACTIVE", "restart_ms": r.get("restart_ms", 0),
+                "bittiming": {"bitrate": r.get("bitrate", 500000)}}
+        if r.get("listen_only"):
+            info["ctrlmode"] = ["LISTEN-ONLY"]
+        flags = ["NOARP", "ECHO"] + (["UP", "LOWER_UP"] if r["link"] == "up" else [])
+        print(json.dumps([{"ifname": dev, "flags": flags, "linkinfo": {"info_kind": "can", "info_data": info}}]))
+        sys.exit(0)
+print('Device "%%s" does not exist.' %% dev, file=sys.stderr)
+sys.exit(1)
+'''
+
+
+def base_roles():
+    return {
+        "canmain": dict(role="canmain", kind="gs_usb", mode="socketcan", attached=1, usb="1-3.2.3", busnum=1,
+                        devnum=41, driver="gs_usb", netdev="canmain", link="down", bitrate=500000, restart_ms=0),
+        "canchg": dict(role="canchg", kind="gs_usb", mode="socketcan", attached=1, usb="1-3.3", busnum=1, devnum=40,
+                       driver="gs_usb", netdev="canchg", link="down", bitrate=500000, restart_ms=0),
+        "canx2": dict(role="canx2", kind="slcan", mode="-", attached=1, usb="1-3.4", busnum=1, devnum=10,
+                      driver="cdc_acm", netdev="none", link="none", tty="/dev/ttyACM1"),
+        "kvaser": dict(role="kvaser", kind="kvaser", mode="socketcan", attached=1, usb="1-3.2.4", busnum=1,
+                       devnum=17, driver="kvaser_usb", netdev="kvaser", link="down", bitrate=500000, restart_ms=100),
+        "pcanfd": dict(role="pcanfd", kind="pcan", mode="-", attached=1, usb="1-3.2.2", busnum=1, devnum=11,
+                       driver="pcan", netdev="none", link="none", chardev="pcanusbfd32", devid=3),
+    }
+
+
+class Bench:
+    """A fake bench: state file, fake canctl and fake ip wired into the layer under test."""
+
+    def __init__(self, **roles_changes):
+        self.dir = tempfile.mkdtemp(prefix="bench_layer_test_")
+        self.state = os.path.join(self.dir, "state.json")
+        roles = base_roles()
+        for k, v in roles_changes.items():
+            roles[k].update(v)
+        self.write({"roles": roles, "log": []})
+        self.canctl = os.path.join(self.dir, "canctl")
+        with open(self.canctl, "w") as f:
+            f.write("#!" + PY + "\n" + FAKE_CANCTL % {"state": self.state})
+        os.chmod(self.canctl, os.stat(self.canctl).st_mode | stat.S_IXUSR)
+        ip = os.path.join(self.dir, "fake_ip.py")
+        with open(ip, "w") as f:
+            f.write(FAKE_IP % {"state": self.state})
+        self.saved = (L.SUDO, L.CANCTL, L.IP_SHOW, L.sleep, L.monotonic, L.WAIT_S)
+        L.SUDO, L.CANCTL, L.IP_SHOW = [], self.canctl, [PY, ip]
+        self.t = [0.0]
+        L.sleep = lambda s: self.t.__setitem__(0, self.t[0] + s)
+        L.monotonic = lambda: self.t[0]
+        L.WAIT_S = 2.0
+
+    def read(self):
+        return json.load(open(self.state))
+
+    def write(self, st):
+        json.dump(st, open(self.state, "w"))
+
+    def set(self, **kw):
+        st = self.read()
+        st.update(kw)
+        self.write(st)
+
+    def role(self, name, **kw):
+        st = self.read()
+        st["roles"][name].update(kw)
+        self.write(st)
+
+    def log(self):
+        return [c for c in self.read()["log"] if c != "roles"]
+
+    def close(self):
+        L.SUDO, L.CANCTL, L.IP_SHOW, L.sleep, L.monotonic, L.WAIT_S = self.saved
+
+
+class Rec:
+    calls = []
+    fail = None
+
+    def __init__(self, **kw):
+        if Rec.fail:
+            raise Rec.fail
+        Rec.calls.append(kw)
+        self.shut = 0
+
+    def shutdown(self):
+        self.shut += 1
+
+
+def bench(fn, guard=True, **roles_changes):
+    """Run fn(b) on a fresh fake bench, with a recording Bus, a passing guard (unless guard=False) and
+    SocketcanHwBus faked."""
+    import canbench.live.socketcan_hw as H
+    b = Bench(**roles_changes)
+    real_bus, real_hw = can.Bus, H.SocketcanHwBus
+    can.Bus = Rec
+    Rec.calls, Rec.fail = [], None
+    H.SocketcanHwBus = lambda channel, **kw: Rec(interface="socketcan_hw", channel=channel, **kw)
+    old = L.set_guard((lambda: None) if guard else None)
+    try:
+        return fn(b)
+    finally:
+        L.set_guard(old)
+        can.Bus, H.SocketcanHwBus = real_bus, real_hw
+        b.close()
+
+
+def refused(fn, *words, cls=None):
+    cls = cls or L.BenchLayerError
+    try:
+        fn()
+    except cls as e:
+        for w in words:
+            assert w in str(e), (w, str(e))
+        return str(e)
+    raise AssertionError("not refused")
+
+
+# ------------------------------------------------------------------ the guard
+
+def test_no_guard_touches_nothing():
+    def body(b):
+        for fn in (lambda: L.link_up("kvaser", 500000), lambda: L.link_down("kvaser"),
+                   lambda: L.set_mode("canmain", "libusb"), lambda: L.open_bench("canchg", 500000),
+                   lambda: L.canctl("down", "kvaser")):
+            refused(fn, "no bench guard set", cls=L.NoGuard)
+        assert b.log() == [], b.log()
+    bench(body, guard=False)
+
+
+def test_a_guard_that_refuses_stops_everything():
+    class NotHeld(Exception):
+        pass
+
+    def no():
+        raise NotHeld("bench held by someone else")
+
+    def body(b):
+        L.set_guard(no)
+        for fn in (lambda: L.link_up("kvaser", 500000), lambda: L.open_bench("kvaser", 500000)):
+            try:
+                fn()
+                raise AssertionError("ran")
+            except NotHeld:
+                pass
+        assert b.log() == [] and Rec.calls == []
+    bench(body)
+
+
+# ------------------------------------------------------------------ links
+
+def test_link_up_reads_back():
+    def body(b):
+        got = L.link_up("kvaser", 500000, restart_ms=100)
+        assert got["up"] and got["bitrate"] == 500000 and not got["listen_only"], got
+        assert b.log() == ["up kvaser 500000 restart-ms 100"], b.log()
+        for lie, word in (({"bitrate": 250000}, "bitrate 250000"), ({"listen_only": True}, "listen-only on"),
+                          ({"link": "down"}, "not UP"), ({"restart_ms": 0}, "restart-ms 0")):
+            b.set(lie=lie)
+            refused(lambda: L.link_up("kvaser", 500000, restart_ms=100), "exited 0 but", word)
+        b.set(lie={}, fail={"up": 3})
+        refused(lambda: L.link_up("kvaser", 500000), "rc 3, did not take")
+    bench(body)
+
+
+def test_link_down_reads_back():
+    def body(b):
+        b.role("kvaser", link="up")
+        assert L.link_down("kvaser")["up"] is False
+        b.set(stuck_up=True)
+        refused(lambda: L.link_down("kvaser"), "still reads UP")
+        refused(lambda: L.link_up("canx2", 500000), "has no netdev")
+    bench(body)
+
+
+# ------------------------------------------------------------------ modes
+
+def test_set_mode_reads_back():
+    def body(b):
+        r = L.to_libusb("canmain")
+        assert r.mode == "libusb" and (r.busnum, r.devnum) == (1, 41)
+        assert L.to_libusb("canmain").mode == "libusb"
+        assert b.log() == ["mode canmain libusb"], "a role already there is left alone"
+        r = L.to_socketcan("canmain")
+        assert r.netdev == "canmain" and r.role.link == "down"
+        assert b.log()[-1].startswith("mode canmain socketcan --wait"), b.log()
+        b.role("canchg", link="up")
+        refused(lambda: L.to_libusb("canchg"), "link canchg is up")
+        b.role("canchg", link="down")
+        b.set(stuck_mode=True)
+        refused(lambda: L.to_libusb("canchg"), "not settled in libusb")
+        b.set(stuck_mode=False)
+        L.to_libusb("canchg")
+        b.set(claimed=True)
+        refused(lambda: L.to_socketcan("canchg"), "rc 3, did not take")
+        refused(lambda: L.set_mode("pcanfd", "libusb"), "has no canctl mode")
+    bench(body)
+
+
+# ------------------------------------------------------------------ open_bench
+
+def test_open_bench_default_libusb_and_back():
+    def body(b):
+        bus = L.open_bench("canchg", 500000)
+        assert Rec.calls == [{"interface": "gs_usb", "bitrate": 500000, "channel": "gs_usb:canchg", "bus": 1,
+                              "address": 40}], Rec.calls
+        assert b.read()["roles"]["canchg"]["mode"] == "libusb"
+        bus.shutdown()
+        bus.shutdown()
+        assert bus.shut == 1, "a second shutdown() does nothing"
+        r = b.read()["roles"]["canchg"]
+        assert (r["mode"], r["driver"], r["link"]) == ("socketcan", "gs_usb", "down"), r
+        assert [c.split(" --")[0] for c in b.log()] == ["mode canchg libusb", "mode canchg socketcan"], b.log()
+    bench(body)
+
+
+def test_open_bench_kvaser_link_up_then_down():
+    def body(b):
+        bus = L.open_bench("kvaser", 500000, restart_ms=100, hw_timestamps=True)
+        assert Rec.calls == [{"interface": "socketcan_hw", "channel": "kvaser"}], Rec.calls
+        bus.shutdown()
+        assert b.log() == ["up kvaser 500000 restart-ms 100", "down kvaser"], b.log()
+    bench(body)
+
+
+def test_open_bench_leaves_a_matching_link_and_restores_a_different_one():
+    def body(b):
+        b.role("kvaser", link="up", bitrate=500000, restart_ms=100)
+        bus = L.open_bench("kvaser", 500000, restart_ms=100)
+        bus.shutdown()
+        assert b.log() == [], "a link already up as asked is not bounced"
+        b.role("kvaser", bitrate=250000)
+        bus = L.open_bench("kvaser", 500000, restart_ms=100)
+        bus.shutdown()
+        assert b.log() == ["up kvaser 500000 restart-ms 100", "up kvaser 250000 restart-ms 100"], b.log()
+    bench(body)
+
+
+def test_open_bench_override_and_no_restore():
+    def body(b):
+        b.role("canmain", mode="libusb", driver="none", netdev="none", link="none")
+        bus = L.open_bench("canmain", 500000, mode="socketcan")
+        assert Rec.calls[-1] == {"interface": "socketcan", "channel": "canmain"}, Rec.calls
+        bus.shutdown()
+        assert [c.split(" --")[0] for c in b.log()] == ["mode canmain socketcan", "up canmain 500000",
+                                                        "down canmain", "mode canmain libusb"], b.log()
+        bus = L.open_bench("canchg", 500000, restore=False)
+        bus.shutdown()
+        assert b.read()["roles"]["canchg"]["mode"] == "libusb", "restore=False keeps the mode"
+        assert bus.bench_layer["restore"] is False
+    bench(body)
+
+
+def test_a_failed_open_puts_the_role_back():
+    def body(b):
+        Rec.fail = OSError("usb gone")
+        try:
+            L.open_bench("canchg", 500000)
+            raise AssertionError("opened")
+        except OSError:
+            pass
+        assert b.read()["roles"]["canchg"]["mode"] == "socketcan", b.log()
+        b.set(claimed=True)
+        refused(lambda: L.open_bench("canmain", 500000), "usb gone", "not put back as found")
+    bench(body)
+
+
+def test_open_bench_refusals():
+    def body(b):
+        for kw in ({"channel": "canchg"}, {"index": 0}, {"bus": 1}, {"address": 40}, {"device_id": 3},
+                   {"serial": "X"}, {"interface": "gs_usb"}):
+            refused(lambda: L.open_bench("canchg", 500000, **kw), "refused", "canctl role")
+        refused(lambda: L.open_bench(0, 500000), "role 0 refused")
+        refused(lambda: L.open_bench("can0", 500000), "not a canctl role", cls=bench_roles.RoleError)
+        refused(lambda: L.open_bench("canx2", 500000), "no default mode")
+        refused(lambda: L.open_bench("pcanfd", 500000, mode="libusb"), "has no mode 'libusb'")
+        refused(lambda: L.open_bench("kvaser"), "needs bitrate=")
+        refused(lambda: L.open_bench("pcanfd"), "give bitrate=")
+        assert b.log() == [] and Rec.calls == [], (b.log(), Rec.calls)
+        L.open_bench("pcanfd", 500000)
+        assert Rec.calls == [{"interface": "pcan", "bitrate": 500000, "device_id": 3}], Rec.calls
+    bench(body)
+
+
+def test_defaults_are_the_projects():
+    assert L.DEFAULT_MODES == {"pcanfd": "pcan", "canchg": "libusb", "canmain": "libusb", "kvaser": "socketcan"}
+
+
+# ------------------------------------------------------------------ classifier
+
+class _M:
+    def __init__(self, can_id, err=True):
+        self.arbitration_id, self.is_error_frame = can_id, err
+
+
+class _Res:
+    def __init__(self, interface):
+        self.interface = interface
+
+
+class _Bus:
+    def __init__(self, interface):
+        self.bench_role = _Res(interface)
+
+
+def test_bus_error_classifier():
+    sc, pc = _Bus("socketcan"), _Bus("pcan")
+    assert L.bus_error(sc, _M(E.CAN_ERR_PROT | E.CAN_ERR_BUSERROR | E.CAN_ERR_CNT))
+    for cls in ("TX_TIMEOUT", "LOSTARB", "PROT", "TRX", "ACK", "BUSERROR"):
+        assert L.bus_error(sc, _M(getattr(E, "CAN_ERR_" + cls))), cls
+    for cls in ("CRTL", "BUSOFF", "RESTARTED", "CNT"):
+        assert not L.bus_error(sc, _M(getattr(E, "CAN_ERR_" + cls))), cls
+    assert L.bus_error(pc, _M(E.CAN_ERR_CRTL)), "every error frame counts off SocketCAN"
+    assert not L.bus_error(sc, _M(E.CAN_ERR_PROT, err=False))
+    assert not L.bus_error(type("SocketcanHwBus", (), {})(), _M(E.CAN_ERR_CRTL))
+
+
+# ------------------------------------------------------------------ the scan
+
+def test_scan_self_check():
+    assert S.self_check() == [], S.self_check()
+
+
+def test_scan_counts_role_calls_only_with_a_pick():
+    hits = S.scan_source("from canbench import bench_layer as L\nL.open_bench('kvaser', 500000)\n"
+                         "L.open_bench(role, 500000, channel=0)\nL.link_up('PCAN_USBBUS1', 500000)\n")
+    assert [(h.line, h.kind) for h in hits] == [(3, "role-pick"), (4, "pcan-channel"), (4, "role-pick")], hits
+
+
+# Where can-tools itself opens adapters (it is the layer, and its detection): (path, kind) -> count. A change in
+# any count fails, so a new open in can-tools is seen and listed here with why.
+CAN_TOOLS_ALLOW = {
+    ("canbench/bench_roles.py", "adapter-class"): 2,    # open_role builds SocketcanHwBus
+    ("canbench/bench_roles.py", "bus-open"): 2,         # open_role: python-can Bus from the resolved role
+    ("canbench/buses.py", "adapter-class"): 2,          # open_bus: hardware through detection
+    ("canbench/buses.py", "bus-open"): 2,
+    ("canbench/gui/logger_window.py", "adapter-class"): 2,
+    ("canbench/live/kvaser_bus.py", "adapter-class"): 3,   # CanbenchKvaserBus subclasses python-can's
+    ("canbench/live/pcan_bus.py", "adapter-class"): 2,     # CanbenchPcanBus subclasses python-can's
+    ("canbench/live/pcan_bus.py", "pcan-channel"): 1,      # its default channel
+    ("canbench/live/receiver.py", "bus-open"): 4,          # detection (non-bench machines; tagged by role on one)
+    ("canbench/live/receiver.py", "usb-scan"): 1,
+    ("canbench/live/receiver.py", "pcan-channel"): 4,
+    ("tools/can_gui.py", "adapter-class"): 2,
+    ("tools/can_logger.py", "adapter-class"): 2,
+    ("tools/can_replayer.py", "adapter-class"): 2,
+}
+
+
+def test_scan_of_can_tools_matches_its_allow_list():
+    from collections import Counter
+    hits = S.scan_paths(S.py_files(str(ROOT), skip_dirs=("__pycache__", ".git", "tests")), root=str(ROOT))
+    got = Counter((h.path, h.kind) for h in hits)
+    assert dict(got) == CAN_TOOLS_ALLOW, "\n".join(str(h) for h in hits)
+
+
+# ------------------------------------------------------------------ runner and can-fail
+
+MUTANTS = [
+    ("bench_layer", "    if _guard is None:\n        raise NoGuard(", "    if False:\n        raise NoGuard("),
+    ("bench_layer", "    _guard()\n", "    pass\n"),
+    ("bench_layer", 'if got["bitrate"] != int(bitrate):', "if False:"),
+    ("bench_layer", 'if got["listen_only"]:', "if False:"),
+    ("bench_layer", "    if not got[\"up\"]:\n        wrong.append", "    if False:\n        wrong.append"),
+    ("bench_layer", "if restart_ms is not None and got[\"restart_ms\"]", "if False and got[\"restart_ms\"]"),
+    ("bench_layer", "    if got[\"up\"]:\n        raise BenchLayerError(f\"canctl down",
+     "    if False:\n        raise BenchLayerError(f\"canctl down"),
+    ("bench_layer", "        if monotonic() >= t_end:\n            raise", "        if True:\n            return res\n            raise"),
+    ("bench_layer", "    if r.netdev and r.link == \"up\":\n        raise BenchLayerError(f\"{role}: link",
+     "    if False:\n        raise BenchLayerError(f\"{role}: link"),
+    ("bench_layer", "    if restore and changed:\n", "    if False:\n"),
+    ("bench_layer", "        if changed:\n            try:\n                _put_back", "        if False:\n            try:\n                _put_back"),
+    ("bench_layer", "    bad = [k for k in PICK_KW if k in kw]", "    bad = []"),
+    ("bench_layer", '"canmain": "libusb", "kvaser": "socketcan"}', '"canmain": "socketcan", "kvaser": "socketcan"}'),
+    ("bench_layer", "        if state[\"done\"]:\n            return", "        if False:\n            return"),
+    ("bench_layer", "            if lk[\"up\"]:\n                link_up(", "            if False:\n                link_up("),
+    ("bench_layer", "not changed and _link_matches(", "False and _link_matches("),
+    ("bench_layer", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR | _e.CAN_ERR_CRTL)"),
+    ("bench_layer", "    if not _is_socketcan(bus):\n        return True", "    if not _is_socketcan(bus):\n        return False"),
+    ("bench_scan", "    if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):\n        return",
+     "    if False:\n        return"),
+    ("bench_scan", 'VIRTUAL = {"virtual", "udp_multicast"}', 'VIRTUAL = {"virtual", "udp_multicast", "socketcan"}'),
+    ("bench_scan", "    if len(n.args) >= 2:\n        return", "    if False:\n        return"),
+    ("bench_scan", "    if any(k.arg is None for k in n.keywords):\n        return", "    if False:\n        return"),
+    ("bench_scan", "            elif fn == \"scan\" and", "            elif False and"),
+    ("bench_scan", "        if isinstance(role.value, str) and role.value not in ROLE_NAMES:",
+     "        if False:"),
+    ("bench_scan", "        if isinstance(role.value, (int, float))", "        if False and isinstance(role.value, (int, float))"),
+    ("bench_scan", '"device_id", "serial", "interface"}', '"device_id", "interface"}'),
+    ("bench_scan", "        elif isinstance(n, (ast.Import, ast.ImportFrom)):\n            for a in n.names:\n                if",
+     "        elif isinstance(n, (ast.Import, ast.ImportFrom)):\n            for a in n.names:\n                if False and"),
+    ("bench_scan", "    if fn in GENERIC_FNS:\n        return None", "    if False:\n        return None"),
+    ("bench_scan", 'PCAN_CHANNEL_RX = re.compile(r"PCAN_USBBUS\\d+\\Z")', 'PCAN_CHANNEL_RX = re.compile(r"PCAN_USBBUS0\\Z")'),
+]
+
+
+def run_all(verbose=True):
+    failed = []
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                if verbose:
+                    print(f"PASS {name}")
+            except Exception as e:
+                failed.append(name)
+                if verbose:
+                    print(f"FAIL {name}: {type(e).__name__}: {e}")
+    return failed
+
+
+def _load_mutant(modname, old, new):
+    src = (ROOT / "canbench" / f"{modname}.py").read_text()
+    assert src.count(old) == 1, f"mutant anchor not unique in {modname}: {old!r} ({src.count(old)})"
+    spec = importlib.util.spec_from_loader(f"canbench.{modname}", loader=None)
+    mod = importlib.util.module_from_spec(spec)
+    exec(compile(src.replace(old, new), f"<mutant {modname}>", "exec"), mod.__dict__)
+    return mod
+
+
+def can_fail():
+    global L, S
+    real = {"bench_layer": L, "bench_scan": S}
+    control = run_all(verbose=False)
+    print(f"control: {'PASS' if not control else 'FAIL ' + ', '.join(control)}")
+    if control:
+        return 1
+    survived = 0
+    for i, (modname, old, new) in enumerate(MUTANTS, 1):
+        mod = _load_mutant(modname, old, new)
+        if modname == "bench_layer":
+            L = mod
+        else:
+            S = mod
+        try:
+            failed = run_all(verbose=False)
+        finally:
+            L, S = real["bench_layer"], real["bench_scan"]
+        print(f"mutant {i:2d} {modname}: {'caught by ' + failed[0] if failed else 'SURVIVED'}  ({old.strip()[:60]!r})")
+        survived += not failed
+    print(f"{len(MUTANTS)} mutants, {survived} survived")
+    return 1 if survived else 0
+
+
+if __name__ == "__main__":
+    if "--can-fail" in sys.argv:
+        sys.exit(can_fail())
+    sys.exit(1 if run_all() else 0)
