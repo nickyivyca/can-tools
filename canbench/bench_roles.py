@@ -39,7 +39,8 @@ kvaser     linuxcan    python-can ``kvaser`` on the canlib channel of the one
                        Kvaser present (leaf; owner 2026-11-18: not forced on
                        anyone, it oopsed on 2026-11-13)
 pcan       pcan        python-can ``pcan`` by the device id canctl reads from
-                       the driver (``device_id``)
+                       the driver (``device_id``); with ``bus_states="report"``
+                       :class:`canbench.live.pcan_bus.CanbenchPcanBus` on it
 slcan      socketcan   netdev ``<role>`` once ``canctl slcan attach``-ed
 slcan      tty         python-can ``slcan`` on the role's tty
 =========  ==========  ======================================================
@@ -49,13 +50,23 @@ timeout)`` (python-can's GsUsbBus ignores it). Its caller must read the bus: the
 257 unread TX echoes (gen-inhibit tester, 2026-11-19); a tx-only caller uses ``bench_layer.open_bench(...,
 drain=True)``.
 
+A PCAN role: python-can 4.6.1's ``PcanBus`` raises from ``recv`` on a bus state other than bus-light / bus-heavy
+(error passive, bus-off, an overrun), which ends a reader thread that does not catch it (gen-inhibit's B9/B10/B14,
+2026-11-19). ``bus_states="report"`` (both ESP reviewers, 2026-11-19) opens ``CanbenchPcanBus`` instead: each bus
+state, status message and overrun comes up in the stream as a Linux-layout controller-state error frame, time-ordered
+with the frames, and never as an exception. An overrun (frames lost) carries ``CAN_ERR_CRTL_RX_OVERFLOW`` in data[1]
+(:func:`canbench.errors.lost_frames`), so it never reads as a state change alone. ``canbench_busoff_reset`` (default
+True: the channel is reset on bus-off) passes through; a witness that must keep its device clock passes False. The
+default ``bus_states="raise"`` is python-can's ``PcanBus``, unchanged.
+
 Refusals raise :class:`RoleError` with the reason: canctl missing or too old
 (no ``roles``), a role not in its table, a device not attached, more than one
 device matching a role (two serial-less Kvasers or PCANs), a mode the caller
 did not allow, a netdev missing or its link down, a libusb role still bound to
 gs_usb, a Kvaser on leaf with no single canlib channel, ``hw_timestamps`` on a
 mode that is not a SocketCAN netdev, a bitrate missing where the device needs
-one.
+one, ``bus_states`` other than raise / report, ``bus_states="report"`` or
+``canbench_busoff_reset`` on a role that is not a PCAN.
 """
 from __future__ import annotations
 
@@ -226,11 +237,21 @@ def resolve(role: str, *, text: str | None = None, _kvaser_channels=None) -> Res
     raise RoleError(f"{role}: kind {r.kind!r} unknown to canbench")
 
 
+BUS_STATES = ("raise", "report")
+
+
 def open_role(role: str, *, bitrate: int | None = None, modes=None, hw_timestamps: bool = False,
-              text: str | None = None, _kvaser_channels=None, **kw):
-    """An open python-can bus for ``role`` (module doc). Runs after the caller's ``canctl up``."""
+              text: str | None = None, _kvaser_channels=None, bus_states: str = "raise", **kw):
+    """An open python-can bus for ``role`` (module doc). Runs after the caller's ``canctl up``.
+    ``bus_states="report"`` (a PCAN role): CanbenchPcanBus, bus states as error frames, never raised."""
     import can
+    if bus_states not in BUS_STATES:
+        raise RoleError(f"{role}: bus_states={bus_states!r}; one of {', '.join(BUS_STATES)}")
     res = resolve(role, text=text, _kvaser_channels=_kvaser_channels)
+    if res.interface != "pcan" and (bus_states != "raise" or "canbench_busoff_reset" in kw):
+        raise RoleError(f"{role}: bus_states / canbench_busoff_reset are for a PCAN role, not {res.interface}")
+    if bus_states == "raise" and "canbench_busoff_reset" in kw:
+        raise RoleError(f"{role}: canbench_busoff_reset is CanbenchPcanBus's; give bus_states='report'")
     if modes is not None and res.mode not in set(modes):
         raise RoleError(f"{role} is in mode {res.mode}; this caller takes {', '.join(sorted(set(modes)))}")
     if res.needs_link_up and res.role.link != "up":
@@ -254,7 +275,11 @@ def open_role(role: str, *, bitrate: int | None = None, modes=None, hw_timestamp
     else:
         if bitrate is None:
             raise RoleError(f"{role} in mode {res.mode} is set up when opened: give bitrate=")
-        bus = can.Bus(interface=res.interface, bitrate=bitrate, **args)
+        if bus_states == "report":
+            from canbench.live import pcan_bus
+            bus = pcan_bus.CanbenchPcanBus(bitrate=bitrate, **args)
+        else:
+            bus = can.Bus(interface=res.interface, bitrate=bitrate, **args)
     if res.interface == "gs_usb":
         _release_on_shutdown(bus)
         _send_timeout(bus)

@@ -261,6 +261,16 @@ def from_pcan_error(type_id: int, data: bytes, **kw) -> ErrorMessage:
     return error_frame(cls, d, **kw)
 
 
+def lost_frames(msg) -> bool:
+    """Whether an error frame in the Linux layout reports frames lost: a controller report with
+    CAN_ERR_CRTL_RX_OVERFLOW (a PCAN overrun or queue overrun, a Kvaser overrun, a SocketCAN rx overflow). A reader
+    that judges completeness checks this, not just the error state."""
+    if not msg.is_error_frame or not msg.arbitration_id & CAN_ERR_CRTL:
+        return False
+    d = bytes(msg.data)
+    return len(d) > 1 and bool(d[1] & CAN_ERR_CRTL_RX_OVERFLOW)
+
+
 def from_pcan_status(status: int, **kw) -> ErrorMessage:
     """A PCAN status word (a status message's 4 data bytes, MSB first, or a bus
     state returned by Read) as a Linux controller-state frame. BUSLIGHT alone

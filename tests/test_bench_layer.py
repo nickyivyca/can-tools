@@ -25,6 +25,7 @@ from canbench import bench_layer as L
 from canbench import bench_roles
 from canbench import bench_scan as S
 from canbench import errors as E
+from canbench.live import pcan_bus as P
 
 PY = sys.executable
 
@@ -520,6 +521,117 @@ def test_open_bench_drain_splits_at_the_first_send():
     bench(body)
 
 
+class _PcanRec(Rec):
+    pass
+
+
+_PcanRec.__name__ = "CanbenchPcanBus"
+
+
+def test_open_bench_pcan_bus_states():
+    """Both ESP reviewers, 2026-11-19: bus_states="report" opens CanbenchPcanBus by role (bus states as error frames,
+    never raised); the default stays python-can's pcan."""
+    def body(b):
+        real = P.CanbenchPcanBus
+        P.CanbenchPcanBus = lambda **kw: _PcanRec(cls="CanbenchPcanBus", **kw)
+        try:
+            bus = L.open_bench("pcanfd", 500000)
+            assert Rec.calls[-1] == {"interface": "pcan", "bitrate": 500000, "device_id": 3}, Rec.calls[-1]
+            assert L.bus_error(bus, can.Message(is_error_frame=True, arbitration_id=E.CAN_ERR_CRTL)), \
+                "python-can's pcan: every error frame counts (not the Linux layout)"
+            bus = L.open_bench("pcanfd", 500000, bus_states="report", canbench_busoff_reset=False)
+            assert Rec.calls[-1] == {"cls": "CanbenchPcanBus", "bitrate": 500000, "device_id": 3,
+                                     "canbench_busoff_reset": False}, Rec.calls[-1]
+            assert not L.bus_error(bus, can.Message(is_error_frame=True, arbitration_id=E.CAN_ERR_CRTL)), \
+                "a CanbenchPcanBus state report is not a bus error"
+            assert L.bus_error(bus, can.Message(is_error_frame=True, arbitration_id=E.CAN_ERR_PROT | E.CAN_ERR_BUSERROR))
+            n = len(Rec.calls)
+            refused(lambda: L.open_bench("pcanfd", 500000, bus_states="quiet"), "bus_states='quiet'", cls=bench_roles.RoleError)
+            refused(lambda: L.open_bench("pcanfd", 500000, canbench_busoff_reset=False), "give bus_states='report'", cls=bench_roles.RoleError)
+            refused(lambda: L.open_bench("kvaser", 500000, bus_states="report"), "for a PCAN role, not socketcan", cls=bench_roles.RoleError)
+            assert len(Rec.calls) == n
+        finally:
+            P.CanbenchPcanBus = real
+    bench(body)
+
+
+class _PMsg:
+    def __init__(self, ID=0, MSGTYPE=0, LEN=0, data=b""):
+        self.ID, self.MSGTYPE, self.LEN = ID, MSGTYPE, LEN
+        self.DATA = list(data) + [0] * (8 - len(data))
+
+
+class _PTs:
+    millis, millis_overflow, micros = 5, 0, 0
+
+
+class _FakeBasic:
+    """PCAN-Basic's Read, as Linux 9.3.3 returns it: a status message's word as the result (pcanbasic_read)."""
+
+    def __init__(self, reads):
+        self.reads = list(reads)
+
+    def Read(self, handle):
+        if not self.reads:
+            return 0x20, _PMsg(), _PTs()
+        result, mid, mtype, data = self.reads.pop(0)
+        return result, _PMsg(mid, mtype, len(data), data), _PTs()
+
+    def GetStatus(self, handle):
+        return 0
+
+    def SetValue(self, handle, param, value):
+        return 0
+
+    def Reset(self, handle):
+        return 0
+
+
+def _real_pcan_bus(reads):
+    import collections
+    from can.bus import CanProtocol
+    cls = P.CanbenchPcanBus
+    bus = cls.__new__(cls)
+    bus.m_objPCANBasic, bus.m_PcanHandle = _FakeBasic(reads), 0x51
+    bus._can_protocol, bus.channel_info, bus._recv_event = CanProtocol.CAN_20, "PCAN_USBBUS1", None
+    bus._pending = collections.deque()
+    bus._last_type, bus._last_raw, bus._synth_status, bus._last_ts = 0, (0, b""), None, 0.0
+    bus.busoff_reset, bus.busoff_reset_interval, bus.busoff_resets = False, 0.0, 0
+    bus._last_reset = float("-inf")
+    bus._filters = None
+    bus._wrap_read("Read")
+    return bus
+
+
+def test_pcan_bus_states_never_raise_and_an_overrun_stays_a_loss():
+    """gen-inhibit reviewer's condition, 2026-11-19: with bus_states="report" an overrun must never read as only a
+    state change (its witnesses VOID on a lost frame)."""
+    import can.interfaces.pcan.pcan as pc
+    saved = pc.HAS_EVENTS
+    pc.HAS_EVENTS = False
+    try:
+        bus = _real_pcan_bus([
+            (0x00000, 0x123, 0x00, b"\x01\x02"),                 # a data frame
+            (0x40000, 0x000, 0x80, b"\x00\x04\x00\x00"),        # status message: error passive
+            (0x00002, 0x000, 0x80, b"\x00\x00\x00\x02"),        # status message: overrun
+            (0x00048, 0x000, 0x00, b""),                         # queue overrun with bus-heavy, returned by Read
+            (0x40020, 0x000, 0x00, b""),                         # error passive with an empty queue
+            (0x00000, 0x004, 0x40, b"\x01\x0A\x05\x00"),        # error message: stuff error, Rx
+        ])
+        got = [bus.recv(0.01) for _ in range(6)]
+    finally:
+        pc.HAS_EVENTS = saved
+    assert not got[0].is_error_frame and got[0].arbitration_id == 0x123, got[0]
+    assert all(m is not None and m.is_error_frame for m in got[1:]), got
+    assert [E.lost_frames(m) for m in got] == [False, False, True, True, False, False], [E.lost_frames(m) for m in got]
+    assert [E.decode(m).state for m in got[1:5]] == ["passive", None, "warning", "passive"], \
+        [E.decode(m).state for m in got[1:5]]
+    assert [L.bus_error(bus, m) for m in got] == [False, False, False, False, False, True], \
+        "only the error message is a bus error"
+    assert not E.lost_frames(can.Message(is_error_frame=True, arbitration_id=E.CAN_ERR_PROT, data=bytes([0, 1]))), \
+        "a protocol error with data[1] 0x01 is not a loss"
+
+
 def test_open_bench_refusals():
     def body(b):
         for kw in ({"channel": "canchg"}, {"index": 0}, {"bus": 1}, {"address": 40}, {"device_id": 3},
@@ -585,7 +697,7 @@ def test_scan_counts_role_calls_only_with_a_pick():
 # Where can-tools itself opens adapters (it is the layer, and its detection): (path, kind) -> count. A change in
 # any count fails, so a new open in can-tools is seen and listed here with why.
 CAN_TOOLS_ALLOW = {
-    ("canbench/bench_roles.py", "adapter-class"): 2,    # open_role builds SocketcanHwBus
+    ("canbench/bench_roles.py", "adapter-class"): 3,    # open_role builds SocketcanHwBus, CanbenchPcanBus
     ("canbench/bench_roles.py", "bus-open"): 2,         # open_role: python-can Bus from the resolved role
     ("canbench/buses.py", "adapter-class"): 2,          # open_bus: hardware through detection
     ("canbench/buses.py", "bus-open"): 2,
@@ -656,6 +768,13 @@ MUTANTS = [
     ("bench_layer", "DRAIN_READ_S = 0.001", "DRAIN_READ_S = 0.05"),
     ("bench_layer", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR | _e.CAN_ERR_CRTL)"),
     ("bench_layer", "    if not _is_socketcan(bus):\n        return True", "    if not _is_socketcan(bus):\n        return False"),
+    ("bench_layer", '    if any(c.__name__ == "CanbenchPcanBus" for c in type(bus).__mro__):', "    if False:"),
+    ("live/pcan_bus", "            r = r & ~_v(PCAN_ERROR_QRCVEMPTY) if r & _STATE_RESULT else r\n", "\n"),
+    ("errors", "    if status & (PCAN_ERROR_OVERRUN | PCAN_ERROR_QOVERRUN):\n        d[1] |= CAN_ERR_CRTL_RX_OVERFLOW",
+     "    if False:\n        d[1] |= CAN_ERR_CRTL_RX_OVERFLOW"),
+    ("errors", "    if status & (PCAN_ERROR_OVERRUN | PCAN_ERROR_QOVERRUN):", "    if status & PCAN_ERROR_OVERRUN:"),
+    ("errors", "    return len(d) > 1 and bool(d[1] & CAN_ERR_CRTL_RX_OVERFLOW)", "    return len(d) > 1"),
+    ("errors", "    if not msg.is_error_frame or not msg.arbitration_id & CAN_ERR_CRTL:", "    if not msg.is_error_frame:"),
     ("bench_scan", "    if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):\n        return",
      "    if False:\n        return"),
     ("bench_scan", 'VIRTUAL = {"virtual", "udp_multicast"}', 'VIRTUAL = {"virtual", "udp_multicast", "socketcan"}'),
@@ -691,15 +810,15 @@ def run_all(verbose=True):
 def _load_mutant(modname, old, new):
     src = (ROOT / "canbench" / f"{modname}.py").read_text()
     assert src.count(old) == 1, f"mutant anchor not unique in {modname}: {old!r} ({src.count(old)})"
-    spec = importlib.util.spec_from_loader(f"canbench.{modname}", loader=None)
+    spec = importlib.util.spec_from_loader(f"canbench.{modname.replace('/', '.')}", loader=None)
     mod = importlib.util.module_from_spec(spec)
     exec(compile(src.replace(old, new), f"<mutant {modname}>", "exec"), mod.__dict__)
     return mod
 
 
 def can_fail():
-    global L, S
-    real = {"bench_layer": L, "bench_scan": S}
+    global L, S, P, E
+    real = {"bench_layer": L, "bench_scan": S, "live/pcan_bus": P, "errors": E}
     control = run_all(verbose=False)
     print(f"control: {'PASS' if not control else 'FAIL ' + ', '.join(control)}")
     if control:
@@ -709,12 +828,18 @@ def can_fail():
         mod = _load_mutant(modname, old, new)
         if modname == "bench_layer":
             L = mod
-        else:
+        elif modname == "bench_scan":
             S = mod
+        elif modname == "live/pcan_bus":
+            P = mod
+        else:                                   # errors: the tests' E and the PCAN bus's own reference
+            E = mod
+            P.errors = mod
         try:
             failed = run_all(verbose=False)
         finally:
-            L, S = real["bench_layer"], real["bench_scan"]
+            L, S, P, E = real["bench_layer"], real["bench_scan"], real["live/pcan_bus"], real["errors"]
+            P.errors = real["errors"]
         print(f"mutant {i:2d} {modname}: {'caught by ' + failed[0] if failed else 'SURVIVED'}  ({old.strip()[:60]!r})")
         survived += not failed
     print(f"{len(MUTANTS)} mutants, {survived} survived")

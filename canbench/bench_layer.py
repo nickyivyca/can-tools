@@ -495,6 +495,10 @@ def _restore_on_shutdown(bus, role, found, now_mode):
 
 
 def _is_socketcan(bus) -> bool:
+    """Whether the bus's error frames are in the Linux layout: a SocketCAN netdev, or canbench's PCAN bus
+    (open_role bus_states="report"), whose reports are Linux controller-state and protocol-error frames."""
+    if any(c.__name__ == "CanbenchPcanBus" for c in type(bus).__mro__):
+        return True
     res = getattr(bus, "bench_role", None)
     if res is not None:
         return res.interface == "socketcan"
@@ -503,7 +507,8 @@ def _is_socketcan(bus) -> bool:
 
 def bus_error_class(bus, can_id: int) -> bool:
     """For an error frame read from ``bus`` with arbitration_id ``can_id``: does it count as a bus error? On
-    SocketCAN only a bus-error class counts; on any other backend every error frame does."""
+    SocketCAN, and on canbench's PCAN bus (bus_states="report"), only a bus-error class counts; on any other backend
+    every error frame does."""
     if not _is_socketcan(bus):
         return True
     return bool(can_id & BUS_ERROR_CLASSES)

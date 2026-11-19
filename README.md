@@ -124,8 +124,13 @@ be read: the device stops taking sends after 257 unread TX echoes; `drain=True` 
 thread that reads and counts everything (`bus.bench_drain`) for a caller that only sends, refuses `recv` while it
 runs, and stops on `bus.stop_drain()` or `shutdown()`; its counts are split at the bus's first `send()` (`before_send`, with the first 32 frames' kind, id and data, and `after_send`), and `open_bench` returns once a drain read has come back empty (`primed`, at most 50 ms), so a frame the device hands over at open (one left from an earlier session) is counted before the first send; it reads 1 ms at a time, so a stop waits out at most one read (`stop_ms` in the counts; on the bench 1.1-2.5 ms, the whole `shutdown()` 1.5-3.0 ms). A libusb gs_usb role from `open_role` honours
 `send(msg, timeout)` (python-can's GsUsbBus ignores it; pyusb's default is 1 s). Index, channel, USB bus / address, device id, serial and interface keywords are refused.
-`bus_error(bus, msg)` counts only bus-error classes on SocketCAN (not CRTL, BUSOFF, RESTARTED, CNT alone), every
-error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own
+A PCAN role opened with `bus_states="report"` (`open_role` / `open_bench`, both ESP reviewers 2026-11-19) is
+`canbench.live.pcan_bus.CanbenchPcanBus`: bus states, status messages and overruns come up as Linux-layout
+controller-state error frames in the stream and are never raised (python-can's `PcanBus`, the default
+`bus_states="raise"`, raises on error passive, bus-off and overruns); an overrun carries `CAN_ERR_CRTL_RX_OVERFLOW`,
+which `canbench.errors.lost_frames(msg)` tests; `canbench_busoff_reset=False` passes through for a witness.
+`bus_error(bus, msg)` counts only bus-error classes on SocketCAN and on `CanbenchPcanBus` (not CRTL, BUSOFF,
+RESTARTED, CNT alone), every error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own
 test (`scan_paths`, `py_files`, `self_check`).
 
 `<interface>:serial:<s>` also names the backend. On Linux an Innomaker is either on

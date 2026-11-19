@@ -11,7 +11,9 @@ python-can 4.6.1's ``PcanBus`` has three gaps this class closes:
    Here a status message becomes a Linux controller-state error frame.
 2. **A bus state returned by Read is dropped.** When Read returns
    BUSLIGHT/BUSHEAVY python-can logs a warning and returns nothing; other states
-   raise. Here the state becomes a status report like (1).
+   raise. Here the state becomes a status report like (1), also when Read
+   returns it together with QRCVEMPTY. An overrun (OVERRUN, QOVERRUN) keeps
+   ``CAN_ERR_CRTL_RX_OVERFLOW`` in the report (``errors.lost_frames``).
 3. **Bus-off is not recovered on Linux.** PCAN-Basic for Linux 9.3.3's
    ``PCAN_BUSOFF_AUTORESET`` never fires on a failed send: ``pcbcore.c`` tests
    the write status against the driver's ``PCANFD_ERROR_BUSOFF`` (4) where the
@@ -108,6 +110,9 @@ class CanbenchPcanBus(PcanBus):
                 return result, m, ts
             if r in (_v(PCAN_ERROR_QRCVEMPTY), _v(PCAN_ERROR_ILLDATA)):
                 return result, m, ts
+            # PCAN-Basic can return a bus state together with QRCVEMPTY (an empty queue); python-can raises on
+            # such a combination unless it holds bus-light / bus-heavy. The state is reported all the same.
+            r = r & ~_v(PCAN_ERROR_QRCVEMPTY) if r & _STATE_RESULT else r
             if r & _STATE_RESULT and not r & ~_STATE_RESULT:
                 # A bus state in place of a message: hand it up as a status message.
                 self._synth_status = r
