@@ -18,10 +18,13 @@ bring a link up or down, on an explicit call, behind a plugged-in bench guard):
   socketcan), read back from ``canctl roles`` until the role resolves in that mode (gs_usb socketcan: bound to
   gs_usb, with a netdev, link down). A netdev role whose link is up is refused: take it down first.
 * :func:`open_bench` -- the one call a harness needs: the role brought to the caller's mode (or
-  :data:`DEFAULT_MODES`), a socketcan link brought up at the bitrate, then :func:`bench_roles.open_role`. With
-  ``restore=True`` (the default) the bus's ``shutdown()``, and a failed open, put the role back as found (mode, and
-  link down or up at its old bitrate); with ``restore=False`` the caller keeps it set for a whole run and puts it
-  back with :func:`set_mode` / :func:`link_down` itself.
+  :data:`DEFAULT_MODES`), a socketcan link brought up at the bitrate, then :func:`bench_roles.open_role`. A failed
+  open, at any step after the first canctl call (a mode that did not settle, a link that read back wrong, the open
+  itself), puts the role back as found (mode, and link down or up at its old bitrate); with ``restore=True`` (the
+  default) the bus's ``shutdown()`` does too, and with ``restore=False`` the caller keeps it set for a whole run
+  and puts it back with :func:`set_mode` / :func:`link_down` itself. A link found up is taken down and put back up
+  at close (``if_up="take"``, the default), or refused before anything is touched (``if_up="refuse"``, for runs that
+  treat an up link as someone else's).
 * :func:`refuse_picks` -- index, channel, USB bus / address, device id, serial and interface keywords are refused
   everywhere here: an adapter is asked for by its role (shared/bench SPEC section 8).
 * :func:`bus_error` / :func:`bus_error_class` -- the error-frame classifier (gen-inhibit reviewer, 2026-11-18): on
@@ -59,6 +62,8 @@ MODES_BY_KIND = {"gs_usb": ("socketcan", "libusb"), "kvaser": ("socketcan", "lin
 # The defaults the two ESP projects use; a caller passes mode= for anything else (gen-inhibit's runs that hold
 # canmain in libusb, a caller wanting canmain on SocketCAN, the Kvaser on leaf). canx2 has none: say which.
 DEFAULT_MODES = {"pcanfd": "pcan", "canchg": "libusb", "canmain": "libusb", "kvaser": "socketcan"}
+
+IF_UP = ("take", "refuse")
 
 BUS_ERROR_CLASSES = (_e.CAN_ERR_TX_TIMEOUT | _e.CAN_ERR_LOSTARB | _e.CAN_ERR_PROT | _e.CAN_ERR_TRX
                      | _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)
@@ -196,6 +201,16 @@ def link_down(role: str) -> dict:
     return got
 
 
+def _table_role(role):
+    """The role's raw ``canctl roles`` line (bench_roles.Role), unresolved: a half-moved role (libusb mode, still
+    bound) reads here where bench_roles.resolve refuses it."""
+    _check_name(role)
+    table = bench_roles.roles(bench_roles.canctl_roles_text(CANCTL or bench_roles.CANCTL))
+    if role not in table:
+        _resolve(role)                                  # bench_roles' own refusal, with the role list
+    return table[role]
+
+
 def _in_mode(res, mode):
     """Whether a Resolved is settled in ``mode`` (gs_usb socketcan: bound, netdev present, link down). A gs_usb role
     in libusb mode resolves only when unbound, with a bus and address (bench_roles refuses it otherwise)."""
@@ -211,11 +226,7 @@ def set_mode(role: str, mode: str, wait_s: float = WAIT_S):
     from ``canctl roles`` until the role resolves settled in that mode, for up to ``wait_s``. A role already
     there is left alone. Refused while a netdev role's link is up. Returns the Resolved."""
     guard(f"set_mode {role} {mode}")
-    _check_name(role)
-    table = bench_roles.roles(bench_roles.canctl_roles_text(CANCTL or bench_roles.CANCTL))
-    if role not in table:
-        _resolve(role)                                  # bench_roles' own refusal, with the role list
-    r = table[role]
+    r = _table_role(role)
     if r.kind not in ("gs_usb", "kvaser") or mode not in MODES_BY_KIND[r.kind]:
         raise BenchLayerError(f"{role} ({r.kind}) has no canctl mode {mode!r} (gs_usb: socketcan, libusb; kvaser: "
                               f"socketcan, linuxcan)")
@@ -264,12 +275,13 @@ def _found(res):
 
 def _put_back(role, found, now_mode):
     """Undo open_bench's changes: the mode as found, then a netdev's link as found (up at its old settings, or
-    down). Every step is tried; BenchLayerError naming each that failed."""
+    down). The mode step reads the raw role line, so a role a failed set_mode left half-moved is put back too.
+    BenchLayerError naming the step that failed."""
     fails = []
     if found["mode"] != now_mode:
         try:
-            res = _resolve(role)
-            if res.netdev and res.role.link == "up":
+            r = _table_role(role)
+            if r.netdev and r.link == "up":
                 link_down(role)
             set_mode(role, found["mode"])
         except Exception as e:
@@ -293,14 +305,22 @@ def _link_matches(lk, bitrate, restart_ms):
 
 
 def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None, hw_timestamps: bool = False,
-               restore: bool = True, restart_ms: int | None = None, wait_s: float = WAIT_S, **kw):
+               restore: bool = True, restart_ms: int | None = None, wait_s: float = WAIT_S, if_up: str = "take",
+               **kw):
     """Bring ``role`` to ``mode`` (or DEFAULT_MODES[role]), bring a SocketCAN link up at ``bitrate``, and open it
-    by role. ``restore=True``: shutdown() (and a failed open) puts the role back as found. Extra keywords go to
-    python-can (receive_own_messages, can_filters, auto_reset, ...), never a pick (refuse_picks)."""
+    by role. A failed open puts the role back as found; ``restore=True``: shutdown() does too. ``if_up="refuse"``:
+    a link found up is refused, nothing touched (default "take": taken down or reused, and put back at close).
+    Extra keywords go to python-can (receive_own_messages, can_filters, auto_reset, ...), never a pick
+    (refuse_picks)."""
     refuse_picks(kw, f"open_bench({role!r})")
     _check_name(role)
+    if if_up not in IF_UP:
+        raise BenchLayerError(f"open_bench({role!r}): if_up={if_up!r}; one of {', '.join(IF_UP)}")
     guard(f"open_bench {role}")
     res = _resolve(role)
+    if if_up == "refuse" and res.netdev and res.role.link == "up":
+        raise BenchLayerError(f"open_bench({role!r}): link {res.netdev} found up, refused (if_up='refuse'); nothing "
+                              f"was touched")
     kind = res.role.kind
     want = mode or DEFAULT_MODES.get(role)
     if want is None:
@@ -314,17 +334,19 @@ def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None
     if want != "socketcan" and bitrate is None:
         raise BenchLayerError(f"open_bench({role!r}): mode {want} is set up when opened: give bitrate=")
     found = _found(res)
+    # changed is set before each step that runs canctl: a step that fails part-way (a mode that did not settle, a
+    # link that read back wrong) may have changed the role already, so it is put back as found.
     changed = False
     try:
         if kind in ("gs_usb", "kvaser") and res.mode != want:
+            changed = True                              # before the mode move
             if res.netdev and res.role.link == "up":
                 link_down(role)
             set_mode(role, want, wait_s)
-            changed = True
         if want == "socketcan" and bitrate is not None and not (
-                not changed and _link_matches(found["link"], bitrate, restart_ms)):
+                res.mode == want and _link_matches(found["link"], bitrate, restart_ms)):
+            changed = True                              # before the link up
             link_up(role, bitrate, restart_ms)
-            changed = True
         bus = bench_roles.open_role(role, bitrate=None if want == "socketcan" else bitrate, modes=(want,),
                                     hw_timestamps=hw_timestamps,
                                     text=bench_roles.canctl_roles_text(CANCTL or bench_roles.CANCTL), **kw)

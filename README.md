@@ -115,10 +115,11 @@ canbench to run canctl on an explicit call, behind a plugged-in guard): `set_gua
 bench guard (with none, nothing here touches the bench); `link_up(role, bitrate, restart_ms=)` /
 `link_down(role)` run `sudo -n canctl up|down` and read the link back with `ip -details -json` (UP, bitrate, not
 listen-only); `set_mode` / `to_libusb` / `to_socketcan` run `canctl mode` and read the role back from `canctl
-roles`; `open_bench(role, bitrate, mode=, hw_timestamps=, restore=True)` brings the role to the caller's mode
-(defaults `DEFAULT_MODES`: pcanfd pcan, canchg and canmain libusb, kvaser socketcan), brings a SocketCAN link up,
-opens it by role, and on `shutdown()` (or a failed open) puts it back as found; `restore=False` keeps it for a
-whole run. Index, channel, USB bus / address, device id, serial and interface keywords are refused.
+roles`; `open_bench(role, bitrate, mode=, hw_timestamps=, restore=True, if_up="take")` brings the role to the
+caller's mode (defaults `DEFAULT_MODES`: pcanfd pcan, canchg and canmain libusb, kvaser socketcan), brings a
+SocketCAN link up, opens it by role, and on `shutdown()` puts it back as found; a failed open, at any step (a mode
+that did not settle, a link that read back wrong, the open itself), puts it back too. `restore=False` keeps it for
+a whole run; `if_up="refuse"` refuses a role whose link is found up, touching nothing. Index, channel, USB bus / address, device id, serial and interface keywords are refused.
 `bus_error(bus, msg)` counts only bus-error classes on SocketCAN (not CRTL, BUSOFF, RESTARTED, CNT alone), every
 error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own
 test (`scan_paths`, `py_files`, `self_check`).

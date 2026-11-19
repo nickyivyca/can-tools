@@ -361,6 +361,45 @@ def test_a_failed_open_puts_the_role_back():
     bench(body)
 
 
+def test_a_failed_step_puts_the_role_back():
+    """gen-inhibit reviewer, 2026-11-19: a set_mode that exits 0 but does not settle, or a link that reads back
+    wrong, may have changed the role already; it is put back as found, as a failed open is."""
+    def body(b):
+        b.set(stuck_mode=True)
+        refused(lambda: L.open_bench("canchg", 500000), "not settled in libusb")
+        r = b.read()["roles"]["canchg"]
+        assert (r["mode"], r["driver"], r["netdev"], r["link"]) == ("socketcan", "gs_usb", "canchg", "down"), r
+        assert [c.split(" --")[0] for c in b.log()] == ["mode canchg libusb", "mode canchg socketcan"], b.log()
+        b.set(log=[])
+        b.role("canmain", link="up", bitrate=500000)
+        refused(lambda: L.open_bench("canmain", 500000), "not settled in libusb")
+        r = b.read()["roles"]["canmain"]
+        assert (r["mode"], r["link"], r["bitrate"]) == ("socketcan", "up", 500000), r
+        assert [c.split(" --")[0] for c in b.log()] == ["down canmain", "mode canmain libusb",
+                                                        "mode canmain socketcan", "up canmain 500000 restart-ms 0"], b.log()
+        b.set(stuck_mode=False, log=[], lie={"bitrate": 250000})
+        refused(lambda: L.open_bench("kvaser", 500000), "reads back bitrate 250000")
+        assert b.read()["roles"]["kvaser"]["link"] == "down"
+        assert b.log() == ["up kvaser 500000", "down kvaser"], b.log()
+        assert Rec.calls == [], Rec.calls
+    bench(body)
+
+
+def test_open_bench_if_up_refuse():
+    """gen-inhibit reviewer, 2026-11-19: runs that treat an up link as interference refuse it, touching nothing."""
+    def body(b):
+        b.role("canmain", link="up", bitrate=500000)
+        refused(lambda: L.open_bench("canmain", 500000, if_up="refuse"), "link canmain found up", "refused")
+        b.role("kvaser", link="up", bitrate=500000, restart_ms=100)
+        refused(lambda: L.open_bench("kvaser", 500000, restart_ms=100, if_up="refuse"), "link kvaser found up")
+        refused(lambda: L.open_bench("canchg", 500000, if_up="leave"), "if_up='leave'")
+        assert b.log() == [] and Rec.calls == [], (b.log(), Rec.calls)
+        b.role("canmain", link="down")
+        L.open_bench("canmain", 500000, if_up="refuse").shutdown()
+        assert [c.split(" --")[0] for c in b.log()] == ["mode canmain libusb", "mode canmain socketcan"], b.log()
+    bench(body)
+
+
 def test_open_bench_refusals():
     def body(b):
         for kw in ({"channel": "canchg"}, {"index": 0}, {"bus": 1}, {"address": 40}, {"device_id": 3},
@@ -470,7 +509,13 @@ MUTANTS = [
     ("bench_layer", '"canmain": "libusb", "kvaser": "socketcan"}', '"canmain": "socketcan", "kvaser": "socketcan"}'),
     ("bench_layer", "        if state[\"done\"]:\n            return", "        if False:\n            return"),
     ("bench_layer", "            if lk[\"up\"]:\n                link_up(", "            if False:\n                link_up("),
-    ("bench_layer", "not changed and _link_matches(", "False and _link_matches("),
+    ("bench_layer", "res.mode == want and _link_matches(", "False and _link_matches("),
+    ("bench_layer", "            changed = True                              # before the mode move", "            pass"),
+    ("bench_layer", "            changed = True                              # before the link up", "            pass"),
+    ("bench_layer", "            r = _table_role(role)\n            if r.netdev",
+     "            r = _resolve(role).role\n            if r.netdev"),
+    ("bench_layer", 'if if_up == "refuse" and res.netdev', 'if False and res.netdev'),
+    ("bench_layer", "    if if_up not in IF_UP:", "    if False:"),
     ("bench_layer", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR | _e.CAN_ERR_CRTL)"),
     ("bench_layer", "    if not _is_socketcan(bus):\n        return True", "    if not _is_socketcan(bus):\n        return False"),
     ("bench_scan", "    if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):\n        return",
