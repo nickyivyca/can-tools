@@ -131,6 +131,14 @@ def main():
              '(e.g. kvaser or ixxat,kvaser). Default: auto-detect all brands.'
     )
     parser.add_argument(
+        '--roles',
+        default=None,
+        help='Bench host: comma-separated canctl roles to log (canmain, canchg, canx2, kvaser, pcanfd), '
+             'buses numbered in this order. A tool on the bench asks for adapters by role (shared/bench '
+             'SPEC section 8, 2026-11-18); canbench.bench_roles finds them. A netdev role must be up '
+             '(canctl up) first. Not with --brands or --udp-multicast.'
+    )
+    parser.add_argument(
         '--passthrough',
         action='store_true',
         help='Passthrough bridge mode: forward frames between exactly 2 dongles '
@@ -194,6 +202,23 @@ def main():
         brands_filter = {b.strip().lower() for b in args.brands.split(',')}
         logger.info(f"Brand filter: {', '.join(sorted(brands_filter))}")
 
+    wanted_roles = None
+    if args.roles:
+        if args.brands or args.udp_multicast:
+            logger.error("--roles names the adapters itself; drop --brands / --udp-multicast")
+            sys.exit(1)
+        from canbench import bench_roles
+        wanted_roles = [r.strip() for r in args.roles.split(',') if r.strip()]
+        brands_filter = set()
+        for r in wanted_roles:
+            try:
+                res = bench_roles.resolve(r)
+            except bench_roles.RoleError as e:
+                logger.error(f"--roles {r}: {e}")
+                sys.exit(1)
+            brands_filter.add(res.interface)
+        logger.info(f"Roles: {', '.join(wanted_roles)} (detecting {', '.join(sorted(brands_filter))})")
+
     # Detect all CAN interfaces
     logger.info("Detecting CAN interfaces...")
     if args.udp_multicast:
@@ -204,6 +229,18 @@ def main():
             sys.exit(1)
     else:
         interfaces = detect_all_can_interfaces(args.bitrate, brands=brands_filter)
+
+    if wanted_roles:
+        from canbench import bench_roles
+        picked = []
+        for r in wanted_roles:
+            hit = [a for a in interfaces if f'role:{r}' in getattr(a, 'ids', ())]
+            if len(hit) != 1:
+                why = bench_roles.role_mismatch(f'role:{r}') if not hit else f"{len(hit)} adapters carry role:{r}"
+                logger.error(f"--roles {r}: {why}")
+                sys.exit(1)
+            picked.append(hit[0])
+        interfaces = picked
 
     if not interfaces:
         logger.error("No CAN interfaces detected!")

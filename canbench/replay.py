@@ -84,6 +84,9 @@ def assign_adapters(buses, adapters, pins=(), matches=None):
         if not hit:
             from canbench.live.receiver import backend_mismatch
             why = backend_mismatch(adapters, key)
+            if not why:
+                from canbench.bench_roles import role_mismatch
+                why = role_mismatch(key) if key.strip().lower().startswith("role:") else None
             if why:
                 raise ReplayInputError(f"--adapter {pin!r}: {why}. Detected:\n{listing}")
         if len(hit) != 1:

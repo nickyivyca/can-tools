@@ -230,7 +230,8 @@ def main():
         metavar='BUS=ID',
         help='Send BUS on the adapter with this id, e.g. d_can=serial:HW123456 or '
              '1=usb:1-10.1 (ids are listed at startup). Repeat per bus. Needed '
-             'whenever two or more adapters are detected.'
+             'whenever two or more adapters are detected. On the madhouse bench use the '
+             'canctl role: b_can=role:pcanfd (shared/bench SPEC section 8).'
     )
     parser.add_argument(
         '--udp-multicast',

@@ -55,6 +55,8 @@ python tools/can_logger.py --output my_capture.log  # explicit filename
 python tools/can_logger.py --output-dir ./VtruxLogs # explicit directory
 python tools/can_logger.py --bitrate 250000         # non-default bitrate
 python tools/can_logger.py --brands ixxat,kvaser    # restrict to specific brands
+python tools/can_logger.py --roles canmain,kvaser   # madhouse bench: these canctl roles, buses in this order
+                                                    # (netdev roles must be up first: canctl up <role> <bitrate>)
 python tools/can_logger.py --udp-multicast 239.99.0.11:47811  # a localhost bus, no hardware (hop limit 0; one port per bus)
 python tools/can_logger.py --debug                  # verbose
 ```

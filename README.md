@@ -98,6 +98,18 @@ detected, every replayed bus goes out on it. With two or more, pin each bus with
 numbers follow plug order), or narrow `--brands` to one; otherwise the replayer
 refuses rather than guess which wire each adapter is on.
 
+**On the madhouse bench, ask for an adapter by its canctl role** (user ruling 2026-11-18,
+canbus-esp-fw-vtrux `shared/bench/SPEC.md` section 8): `canmain`, `canchg`, `canx2`, `kvaser`,
+`pcanfd`. Every tool that opens a bench adapter, in any session, does this; no tool takes one by an
+enumeration index, a channel number or the first of its kind found. `canbench.bench_roles` turns a
+role into a device through canctl's read-only `canctl roles` (no serials): `resolve(role)` says where
+it is and how to bring it up (netdev, USB bus and address), and `open_role(role, modes=...,
+hw_timestamps=...)` opens it, after the caller's own `canctl up` (canbench never brings a link up or
+down), refusing with the reason when the role is absent, in a mode the caller did not allow, or its
+link is down. On a bench host every detected adapter also carries a `role:<role>` id, so the CLIs take
+`can_replayer --adapter b_can=role:pcanfd --adapter d_can=role:canx2` and `can_logger --roles
+canmain,kvaser`. The serial, USB and channel ids above stay for use off the bench.
+
 `<interface>:serial:<s>` also names the backend. On Linux an Innomaker is either on
 the kernel's gs_usb driver (SocketCAN) or on libusb (python-can `gs_usb`), with the
 same serial: `serial:<s>` matches it on whichever it is on, `socketcan:serial:<s>`
@@ -137,6 +149,8 @@ canbench/
                  backends.py: install() puts pcan_bus.CanbenchPcanBus and kvaser_bus.CanbenchKvaserBus
                  behind python-can's "pcan" / "kvaser" names (Linux-layout error reports, PCAN bus-off reset)
   live/clock.py  frame timestamps: the adapter's clock on the wall clock (drift, wrap)
+  bench_roles.py open a bench adapter by its canctl role (canctl roles -> resolve / open_role, refusals),
+                 role:<role> ids on detected adapters; shared/bench SPEC section 8 (2026-11-18)
   live/socketcan_hw.py  opt-in SocketCAN bus (SocketcanHwBus) with SO_TIMESTAMPING: each frame keeps the host
                  receive stamp (msg.timestamp) and the adapter's raw hardware stamp (msg.hw_timestamp), all
                  error classes passed; a per-open check (bus.stamp_check) that the hardware stamps are nonzero,

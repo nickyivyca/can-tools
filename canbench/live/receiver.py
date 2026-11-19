@@ -575,4 +575,26 @@ def detect_all_can_interfaces(bitrate, brands=None, _sysfs='/sys/class/net'):
             skipped.add(ch, e)
     skipped.report()
 
-    return interfaces
+    return _tag_roles(interfaces) if _sysfs == '/sys/class/net' else interfaces
+
+
+def _tag_roles(interfaces):
+    """Add ``role:<role>`` ids (and the role in the description) on a bench host with canctl.
+
+    canbench.bench_roles; user ruling 2026-11-18: bench tools ask for an adapter by its canctl role.
+    Off a bench (no canctl) nothing changes.
+    """
+    try:
+        from canbench import bench_roles
+        bench_roles.tag_adapters(interfaces)
+    except Exception as e:
+        logger.debug(f"bench roles: {e}")
+        return interfaces
+    out = []
+    for a in interfaces:
+        rs = [i for i in a.ids if i.startswith('role:')]
+        if rs:
+            a = Adapter(a.interface, a.channel, f"{a.desc} [{', '.join(rs)}]", a.ids)
+            logger.info(f"{a.desc}: bench role {', '.join(r[5:] for r in rs)}")
+        out.append(a)
+    return out
