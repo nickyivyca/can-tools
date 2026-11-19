@@ -24,7 +24,10 @@ bring a link up or down, on an explicit call, behind a plugged-in bench guard):
   default) the bus's ``shutdown()`` does too, and with ``restore=False`` the caller keeps it set for a whole run
   and puts it back with :func:`set_mode` / :func:`link_down` itself. A link found up is taken down and put back up
   at close (``if_up="take"``, the default), or refused before anything is touched (``if_up="refuse"``, for runs that
-  treat an up link as someone else's).
+  treat an up link as someone else's). A libusb gs_usb role's caller must read the bus: the device stops taking
+  sends after 257 unread TX echoes (gen-inhibit tester, 2026-11-19). ``drain=True`` runs a reader thread that
+  reads and counts everything (``bus.bench_drain``) for a caller that only sends; ``recv`` is refused while it runs,
+  and ``bus.stop_drain()`` or ``shutdown()`` stops it.
 * :func:`refuse_picks` -- index, channel, USB bus / address, device id, serial and interface keywords are refused
   everywhere here: an adapter is asked for by its role (shared/bench SPEC section 8).
 * :func:`bus_error` / :func:`bus_error_class` -- the error-frame classifier (gen-inhibit reviewer, 2026-11-18): on
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
 
 from canbench import bench_roles
@@ -64,6 +68,7 @@ MODES_BY_KIND = {"gs_usb": ("socketcan", "libusb"), "kvaser": ("socketcan", "lin
 DEFAULT_MODES = {"pcanfd": "pcan", "canchg": "libusb", "canmain": "libusb", "kvaser": "socketcan"}
 
 IF_UP = ("take", "refuse")
+DRAIN_POLL_S = 0.05                     # the drain thread's read timeout: how soon it sees stop_drain()
 
 BUS_ERROR_CLASSES = (_e.CAN_ERR_TX_TIMEOUT | _e.CAN_ERR_LOSTARB | _e.CAN_ERR_PROT | _e.CAN_ERR_TRX
                      | _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)
@@ -306,10 +311,12 @@ def _link_matches(lk, bitrate, restart_ms):
 
 def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None, hw_timestamps: bool = False,
                restore: bool = True, restart_ms: int | None = None, wait_s: float = WAIT_S, if_up: str = "take",
-               **kw):
+               drain: bool = False, **kw):
     """Bring ``role`` to ``mode`` (or DEFAULT_MODES[role]), bring a SocketCAN link up at ``bitrate``, and open it
     by role. A failed open puts the role back as found; ``restore=True``: shutdown() does too. ``if_up="refuse"``:
     a link found up is refused, nothing touched (default "take": taken down or reused, and put back at close).
+    ``drain=True`` (libusb gs_usb only): a reader thread reads and counts what arrives, for a caller that only
+    sends (bus.bench_drain, bus.stop_drain()).
     Extra keywords go to python-can (receive_own_messages, can_filters, auto_reset, ...), never a pick
     (refuse_picks)."""
     refuse_picks(kw, f"open_bench({role!r})")
@@ -333,6 +340,8 @@ def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None
         raise BenchLayerError(f"open_bench({role!r}): socketcan needs bitrate= to bring the link up")
     if want != "socketcan" and bitrate is None:
         raise BenchLayerError(f"open_bench({role!r}): mode {want} is set up when opened: give bitrate=")
+    if drain and not (kind == "gs_usb" and want == "libusb"):
+        raise BenchLayerError(f"open_bench({role!r}): drain is for a gs_usb role in libusb mode, not {kind} {want}")
     found = _found(res)
     # changed is set before each step that runs canctl: a step that fails part-way (a mode that did not settle, a
     # link that read back wrong) may have changed the role already, so it is put back as found.
@@ -361,9 +370,62 @@ def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None
         bus.bench_layer = {"role": role, "mode": want, "found": found, "restore": restore}
     except AttributeError:
         pass
+    if drain:
+        _start_drain(bus, role)
     if restore and changed:
         _restore_on_shutdown(bus, role, found, want)
     return bus
+
+
+def _start_drain(bus, role):
+    """A reader thread on a libusb gs_usb bus that reads and counts every frame (TX echoes, received frames, error
+    frames) so a caller that only sends never fills the device's echo slots. bus.recv is refused while it runs;
+    bus.stop_drain() stops it (and returns the counts), as shutdown() does before closing the device."""
+    stats = {"echoes": 0, "rx": 0, "errors": 0, "running": True, "error": None}
+    stop = threading.Event()
+    orig_recv, orig_shutdown = bus.recv, bus.shutdown
+
+    def reader():
+        try:
+            while not stop.is_set():
+                t0 = time.monotonic()
+                m = orig_recv(DRAIN_POLL_S)
+                if m is None:
+                    if time.monotonic() - t0 < DRAIN_POLL_S / 2:
+                        stop.wait(DRAIN_POLL_S)         # a read that fails at once (device gone): do not spin
+                    continue
+                if m.is_error_frame:
+                    stats["errors"] += 1
+                elif m.is_rx:
+                    stats["rx"] += 1
+                else:
+                    stats["echoes"] += 1
+        except Exception as e:
+            stats["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            stats["running"] = False
+
+    def recv(*a, **k):
+        raise BenchLayerError(f"{role}: the drain thread is reading this bus (open_bench drain=True); "
+                              f"bus.stop_drain() first")
+
+    def stop_drain():
+        stop.set()
+        t.join(5)
+        if t.is_alive():
+            raise BenchLayerError(f"{role}: the drain thread did not stop within 5 s")
+        bus.recv = orig_recv
+        return dict(stats)
+
+    def shutdown():
+        try:
+            stop_drain()
+        finally:
+            orig_shutdown()
+
+    t = threading.Thread(target=reader, name=f"bench-drain-{role}", daemon=True)
+    bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown = stats, stop_drain, recv, shutdown
+    t.start()
 
 
 def _restore_on_shutdown(bus, role, found, now_mode):

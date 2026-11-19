@@ -13,6 +13,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,6 +173,9 @@ class Bench:
 class Rec:
     calls = []
     fail = None
+    rx = []                     # what recv() hands out, in order; empty: recv waits its timeout and returns None
+    gone = False                # recv returns None at once (a device gone)
+    reads = 0
 
     def __init__(self, **kw):
         if Rec.fail:
@@ -179,8 +183,20 @@ class Rec:
         Rec.calls.append(kw)
         self.shut = 0
 
+    def send(self, msg, timeout=None):
+        pass
+
+    def recv(self, timeout=None):
+        Rec.reads += 1
+        if Rec.rx:
+            return Rec.rx.pop(0)
+        if not Rec.gone:
+            time.sleep(timeout or 0)
+        return None
+
     def shutdown(self):
         self.shut += 1
+        self.shut_saw_drain_running = getattr(self, "bench_drain", {}).get("running")
 
 
 def bench(fn, guard=True, **roles_changes):
@@ -190,7 +206,7 @@ def bench(fn, guard=True, **roles_changes):
     b = Bench(**roles_changes)
     real_bus, real_hw = can.Bus, H.SocketcanHwBus
     can.Bus = Rec
-    Rec.calls, Rec.fail = [], None
+    Rec.calls, Rec.fail, Rec.rx, Rec.gone, Rec.reads = [], None, [], False, 0
     H.SocketcanHwBus = lambda channel, **kw: Rec(interface="socketcan_hw", channel=channel, **kw)
     old = L.set_guard((lambda: None) if guard else None)
     try:
@@ -400,6 +416,41 @@ def test_open_bench_if_up_refuse():
     bench(body)
 
 
+def _counts(bus):
+    d = bus.bench_drain
+    return d["echoes"], d["rx"], d["errors"]
+
+
+def test_open_bench_drain():
+    """gen-inhibit reviewer, 2026-11-19: a libusb gs_usb device stops taking sends after 257 unread TX echoes, so a
+    caller that only sends asks for a drain thread."""
+    def body(b):
+        Rec.rx = ([can.Message(arbitration_id=0x6B0, is_rx=False) for _ in range(3)]
+                  + [can.Message(arbitration_id=0x6B1) for _ in range(2)] + [can.Message(is_error_frame=True)])
+        bus = L.open_bench("canchg", 500000, drain=True)
+        t_end = time.monotonic() + 5
+        while sum(_counts(bus)) < 6 and time.monotonic() < t_end:
+            time.sleep(0.01)
+        assert _counts(bus) == (3, 2, 1), bus.bench_drain
+        refused(lambda: bus.recv(0.1), "drain thread is reading")
+        bus.shutdown()
+        assert bus.shut == 1 and bus.shut_saw_drain_running is False, "the drain stops before the device closes"
+        assert b.read()["roles"]["canchg"]["mode"] == "socketcan", "and the role is put back after"
+        bus = L.open_bench("canchg", 500000, drain=True, restore=False)
+        assert bus.stop_drain()["running"] is False
+        assert bus.recv(0.01) is None, "recv works once the drain is stopped"
+        Rec.gone, Rec.reads = True, 0
+        bus = L.open_bench("canmain", 500000, drain=True)
+        time.sleep(0.3)
+        bus.shutdown()
+        assert Rec.reads < 30, f"a read that fails at once is not spun on ({Rec.reads} reads in 0.3 s)"
+        n = len(b.log())
+        refused(lambda: L.open_bench("kvaser", 500000, drain=True), "drain is for a gs_usb role in libusb mode")
+        refused(lambda: L.open_bench("canchg", 500000, mode="socketcan", drain=True), "not gs_usb socketcan")
+        assert len(b.log()) == n, b.log()
+    bench(body)
+
+
 def test_open_bench_refusals():
     def body(b):
         for kw in ({"channel": "canchg"}, {"index": 0}, {"bus": 1}, {"address": 40}, {"device_id": 3},
@@ -516,6 +567,14 @@ MUTANTS = [
      "            r = _resolve(role).role\n            if r.netdev"),
     ("bench_layer", 'if if_up == "refuse" and res.netdev', 'if False and res.netdev'),
     ("bench_layer", "    if if_up not in IF_UP:", "    if False:"),
+    ("bench_layer", "                elif m.is_rx:", "                elif True:"),
+    ("bench_layer", "        bus.recv = orig_recv\n", "        pass\n"),
+    ("bench_layer", "            stop_drain()\n        finally:", "            pass\n        finally:"),
+    ("bench_layer", 'if drain and not (kind == "gs_usb" and want == "libusb"):', "if False:"),
+    ("bench_layer", "    if drain:\n        _start_drain", "    if False:\n        _start_drain"),
+    ("bench_layer", "bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown = stats, stop_drain, recv, shutdown",
+     "bus.bench_drain, bus.stop_drain, bus.shutdown = stats, stop_drain, shutdown"),
+    ("bench_layer", "                        stop.wait(DRAIN_POLL_S)", "                        pass"),
     ("bench_layer", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR | _e.CAN_ERR_CRTL)"),
     ("bench_layer", "    if not _is_socketcan(bus):\n        return True", "    if not _is_socketcan(bus):\n        return False"),
     ("bench_scan", "    if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):\n        return",

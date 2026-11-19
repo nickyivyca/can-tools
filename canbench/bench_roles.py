@@ -44,6 +44,11 @@ slcan      socketcan   netdev ``<role>`` once ``canctl slcan attach``-ed
 slcan      tty         python-can ``slcan`` on the role's tty
 =========  ==========  ======================================================
 
+A libusb gs_usb bus from :func:`open_role` releases its pyusb claim on ``shutdown()`` and honours ``send(msg,
+timeout)`` (python-can's GsUsbBus ignores it). Its caller must read the bus: the device stops taking sends after
+257 unread TX echoes (gen-inhibit tester, 2026-11-19); a tx-only caller uses ``bench_layer.open_bench(...,
+drain=True)``.
+
 Refusals raise :class:`RoleError` with the reason: canctl missing or too old
 (no ``roles``), a role not in its table, a device not attached, more than one
 device matching a role (two serial-less Kvasers or PCANs), a mode the caller
@@ -56,6 +61,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 
 CANCTL = os.environ.get("CANBENCH_CANCTL", "/usr/local/sbin/canctl")
@@ -251,6 +257,7 @@ def open_role(role: str, *, bitrate: int | None = None, modes=None, hw_timestamp
         bus = can.Bus(interface=res.interface, bitrate=bitrate, **args)
     if res.interface == "gs_usb":
         _release_on_shutdown(bus)
+        _send_timeout(bus)
     try:
         bus.bench_role = res
     except AttributeError:
@@ -275,6 +282,32 @@ def _release_on_shutdown(bus):
             release_gs_usb(bus)
 
     bus.shutdown = shutdown
+
+
+def _send_timeout(bus):
+    """Make a libusb gs_usb role's ``send(msg, timeout)`` honour ``timeout``.
+
+    python-can's GsUsbBus.send ignores its timeout, so a send the device cannot take (TX slots full: nothing
+    ACKs, or 257 unread TX echoes) blocks for pyusb's default 1 s before it raises. The timeout given is set as
+    the pyusb device's default for that one write (the reads pass their own); None keeps pyusb's 1 s, and 0 is
+    taken as 1 ms (0 is "forever" to pyusb). gen-inhibit reviewer, 2026-11-19.
+    """
+    orig = bus.send
+    lock = threading.Lock()
+
+    def send(msg, timeout=None):
+        if timeout is None:
+            return orig(msg)
+        dev = bus.gs_usb.gs_usb
+        with lock:
+            old = dev.default_timeout
+            dev.default_timeout = max(1, round(timeout * 1000))
+            try:
+                return orig(msg)
+            finally:
+                dev.default_timeout = old
+
+    bus.send = send
 
 
 def tag_adapters(adapters, text: str | None = None, _kvaser_channels=None):

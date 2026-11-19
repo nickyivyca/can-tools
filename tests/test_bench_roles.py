@@ -7,6 +7,7 @@ fake canctl script stands in for the real one. No adapter is opened. Run standal
 import os
 import stat
 import sys
+import types
 import tempfile
 from pathlib import Path
 
@@ -57,7 +58,11 @@ class Rec:
 
     def __init__(self, **kw):
         Rec.calls.append(kw)
-        self.gs_usb = None
+        self.gs_usb = types.SimpleNamespace(gs_usb=types.SimpleNamespace(default_timeout=1000))
+        self.sent = []
+
+    def send(self, msg, timeout=None):
+        self.sent.append((msg, timeout, self.gs_usb.gs_usb.default_timeout))
 
     def shutdown(self):
         Rec.shut.append(self)
@@ -165,6 +170,25 @@ def test_open_role_applies_linux_fixes_and_releases_a_libusb_role():
         assert released == [bus], "only a libusb gs_usb role is released"
     finally:
         linux_fixes.apply, receiver.release_gs_usb = real_apply, real_release
+
+
+def test_a_libusb_role_honours_the_send_timeout():
+    """python-can's GsUsbBus.send ignores timeout; open_role sets it as pyusb's write timeout for that send."""
+    from canbench.live import receiver
+    real_release = receiver.release_gs_usb
+    receiver.release_gs_usb = lambda bus: None
+    try:
+        bus = with_fake_bus(lambda: B.open_role("canchg", bitrate=500000, text=text()))
+        bus.send("a")
+        bus.send("b", timeout=0.1)
+        bus.send("c", 0)
+        assert bus.sent == [("a", None, 1000), ("b", None, 100), ("c", None, 1)], bus.sent
+        assert bus.gs_usb.gs_usb.default_timeout == 1000, "put back after each send"
+        sock = with_fake_bus(lambda: B.open_role("canmain", text=text()))
+        sock.send("d", timeout=0.1)
+        assert sock.sent == [("d", 0.1, 1000)], "a socketcan role's send is python-can's own"
+    finally:
+        receiver.release_gs_usb = real_release
 
 
 def test_hw_timestamps_only_on_a_socketcan_netdev():
