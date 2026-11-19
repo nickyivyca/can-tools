@@ -19,6 +19,14 @@ from PyQt5 import QtWidgets
 from canbench import buses
 from canbench.gui import LoggerWindow
 from canbench.gui.logger_window import COL_TOTAL
+import canbench.gui.logger_window as _lw
+
+# The window runs adapter detection when built and on Refresh. Detection opens real adapters (PCAN
+# channels at 500k, Kvaser channels), which on the madhouse bench are the bench's, possibly in another
+# session's take: stubbed to "none found" unless CANBENCH_HARDWARE_TESTS=1 (2026-11-18, after this test's
+# detection touched the PCAN during the charge-interposer tester's take). These tests use the virtual bus.
+if os.environ.get("CANBENCH_HARDWARE_TESTS") != "1":
+    _lw.detect_all_can_interfaces = lambda *a, **k: []
 
 
 def test_window_start_monitor_stop():

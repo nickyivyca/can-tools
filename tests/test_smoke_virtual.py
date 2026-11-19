@@ -29,8 +29,11 @@ from canbench import logio
 
 def test_detect_runs_without_hardware():
     """Detection executes and returns a list (socketcan is absent on Windows)."""
-    ifaces = detect_all_can_interfaces(500000, brands={"socketcan"})
-    assert isinstance(ifaces, list)
+    # An empty fake sysfs: detection must not open the host's real CAN interfaces (on the bench they are
+    # the bench's adapters, possibly in another session's take; 2026-11-18).
+    with tempfile.TemporaryDirectory() as empty:
+        ifaces = detect_all_can_interfaces(500000, brands={"socketcan"}, _sysfs=empty)
+    assert ifaces == []
 
 
 def test_canbuslogger_receives_over_virtual_bus():

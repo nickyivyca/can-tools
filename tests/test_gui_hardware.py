@@ -10,7 +10,10 @@ while the GUI captures the checked dongle.
      and transmit frames.
   4. The GUI's Kvaser row must show those frames.
 
-SKIPs cleanly (exit 0) if both dongles are not present.
+SKIPs cleanly (exit 0) if both dongles are not present, and **unless CANBENCH_HARDWARE_TESTS=1**:
+detection opens real adapters (PCAN channels at 500k, Kvaser channels), which on the madhouse bench are
+the bench's, possibly in another session's take. Run it only inside your own bench take (2026-11-18,
+after the default suite's detection touched the PCAN during the charge-interposer tester's take).
 """
 import os
 import sys
@@ -32,12 +35,23 @@ from canbench.gui.logger_window import COL_TOTAL
 BR = 500000
 
 
+HARDWARE_OK = os.environ.get("CANBENCH_HARDWARE_TESTS") == "1"
+
+
 def _have_both():
+    if not HARDWARE_OK:
+        return False
     kinds = {i[0] for i in detect_all_can_interfaces(BR)}
     return {"kvaser", "gs_usb"} <= kinds
 
 
 def test_gui_owns_only_checked_dongle():
+    if not _have_both():
+        try:
+            import pytest
+            pytest.skip("CANBENCH_HARDWARE_TESTS=1 and both kvaser + gs_usb needed")
+        except ImportError:
+            return
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     win = LoggerWindow()   # hardware only; both dongles listed + checked
@@ -103,7 +117,8 @@ def test_gui_gs_usb_start_stop_restart():
 
 if __name__ == "__main__":
     if not _have_both():
-        print("SKIP  test_gui_hardware: need both kvaser + gs_usb (Innomaker) connected")
+        print("SKIP  test_gui_hardware: needs CANBENCH_HARDWARE_TESTS=1 (inside your own bench take) and both "
+              "kvaser + gs_usb (Innomaker) connected")
         sys.exit(0)
     failures = 0
     for name, fn in sorted(globals().items()):

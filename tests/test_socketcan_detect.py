@@ -68,12 +68,15 @@ class _FakeBus:
 
 def _adapters(brands, rig=RIG):
     real = can.interface.Bus
+    real_libusb = receiver._ensure_gs_usb_libusb
     can.interface.Bus = lambda **kw: _FakeBus(**kw)
+    receiver._ensure_gs_usb_libusb = lambda: False     # no real libusb scan of the host's Innomakers
     try:
         return [a for a in receiver.detect_all_can_interfaces(500000, brands=brands, _sysfs=_sysfs(rig))
                 if a.interface == "socketcan"]
     finally:
         can.interface.Bus = real
+        receiver._ensure_gs_usb_libusb = real_libusb
 
 
 def _detect(brands, rig=RIG):
