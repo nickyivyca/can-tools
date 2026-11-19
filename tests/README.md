@@ -11,6 +11,10 @@ dongles attached.
 records it with can_logger to TRC, end to end, whole and with `--window` (a slice of the log).
 `test_replay_load.py` covers `replay.parse_window` / `replay.window` on their own.
 
+`test_socketcan_hw.py` covers `canbench.live.socketcan_hw` with a fake socket (crafted `struct can_frame`
+and `SCM_TIMESTAMPING` data): both stamps per frame, error frames passed whole, and the per-open stamp check's
+pass and its failures (all-zero hardware stamps, host time posing as hardware, stamps that don't advance).
+
 Every `udp_multicast` bus is opened through `canbench.buses.open_bus`, hop limit 0, checked
 (`test_buses.py`). Tests that need buses kept apart give each its own port (47800-47999).
 

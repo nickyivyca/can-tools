@@ -137,6 +137,10 @@ canbench/
                  backends.py: install() puts pcan_bus.CanbenchPcanBus and kvaser_bus.CanbenchKvaserBus
                  behind python-can's "pcan" / "kvaser" names (Linux-layout error reports, PCAN bus-off reset)
   live/clock.py  frame timestamps: the adapter's clock on the wall clock (drift, wrap)
+  live/socketcan_hw.py  opt-in SocketCAN bus (SocketcanHwBus) with SO_TIMESTAMPING: each frame keeps the host
+                 receive stamp (msg.timestamp) and the adapter's raw hardware stamp (msg.hw_timestamp), all
+                 error classes passed; a per-open check (bus.stamp_check) that the hardware stamps are nonzero,
+                 advancing and on the adapter's clock, else host stamps only and why. Kvaser on kvaser_usb first
   errors.py      the canonical error record: Linux error-frame decoding, PCAN / Kvaser translations, TRC records
   trcwriter.py   TRC 2.1 writer keeping error (ER/ST/EC + EV), remote and CAN FD frames; $STARTTIME UTC,
                  plus `Start time (UTC)` / `Start time (local)` comment lines (owner ruling 2026-11-13)
