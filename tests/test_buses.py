@@ -13,9 +13,15 @@ def test_software_interfaces_listed():
     sw = buses.software_interfaces()
     ifaces = {i[0] for i in sw}
     assert ifaces == {"virtual", "udp_multicast"}
-    # list_interfaces appends software entries after hardware
-    full = buses.list_interfaces(500000, brands={"socketcan"})
-    assert full[-2:] == sw
+    # list_interfaces appends software entries after hardware. Detection stubbed: the real one opens every UP
+    # SocketCAN netdev on the host (on the madhouse bench, the Kvaser's while its link is up; 2026-11-19).
+    real = buses.detect_all_can_interfaces
+    buses.detect_all_can_interfaces = lambda bitrate, brands=None: [("socketcan", "hw0", "stub")]
+    try:
+        full = buses.list_interfaces(500000, brands={"socketcan"})
+    finally:
+        buses.detect_all_can_interfaces = real
+    assert full[0] == ("socketcan", "hw0", "stub") and full[-2:] == sw
 
 
 def test_open_virtual_roundtrip():
