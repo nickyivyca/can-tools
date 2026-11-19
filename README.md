@@ -119,10 +119,10 @@ roles`; `open_bench(role, bitrate, mode=, hw_timestamps=, restore=True, if_up="t
 caller's mode (defaults `DEFAULT_MODES`: pcanfd pcan, canchg and canmain libusb, kvaser socketcan), brings a
 SocketCAN link up, opens it by role, and on `shutdown()` puts it back as found; a failed open, at any step (a mode
 that did not settle, a link that read back wrong, the open itself), puts it back too. `restore=False` keeps it for
-a whole run; `if_up="refuse"` refuses a role whose link is found up, touching nothing. A libusb gs_usb role must
+a whole run; `if_up="refuse"` refuses a role whose link is found up, touching nothing (`LinkFoundUp`, a `BenchLayerError` carrying `role`, `netdev` and the `link` read). A libusb gs_usb role must
 be read: the device stops taking sends after 257 unread TX echoes; `drain=True` (libusb gs_usb only) runs a reader
 thread that reads and counts everything (`bus.bench_drain`) for a caller that only sends, refuses `recv` while it
-runs, and stops on `bus.stop_drain()` or `shutdown()`; it reads 1 ms at a time, so a stop waits out at most one read (`stop_ms` in the counts; on the bench 1.1-2.5 ms, the whole `shutdown()` 1.5-3.0 ms). A libusb gs_usb role from `open_role` honours
+runs, and stops on `bus.stop_drain()` or `shutdown()`; its counts are split at the bus's first `send()` (`before_send`, with the first 32 frames' kind, id and data, and `after_send`), and `open_bench` returns once a drain read has come back empty (`primed`, at most 50 ms), so a frame the device hands over at open (one left from an earlier session) is counted before the first send; it reads 1 ms at a time, so a stop waits out at most one read (`stop_ms` in the counts; on the bench 1.1-2.5 ms, the whole `shutdown()` 1.5-3.0 ms). A libusb gs_usb role from `open_role` honours
 `send(msg, timeout)` (python-can's GsUsbBus ignores it; pyusb's default is 1 s). Index, channel, USB bus / address, device id, serial and interface keywords are refused.
 `bus_error(bus, msg)` counts only bus-error classes on SocketCAN (not CRTL, BUSOFF, RESTARTED, CNT alone), every
 error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own

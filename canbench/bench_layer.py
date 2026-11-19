@@ -24,10 +24,12 @@ bring a link up or down, on an explicit call, behind a plugged-in bench guard):
   default) the bus's ``shutdown()`` does too, and with ``restore=False`` the caller keeps it set for a whole run
   and puts it back with :func:`set_mode` / :func:`link_down` itself. A link found up is taken down and put back up
   at close (``if_up="take"``, the default), or refused before anything is touched (``if_up="refuse"``, for runs that
-  treat an up link as someone else's). A libusb gs_usb role's caller must read the bus: the device stops taking
+  treat an up link as someone else's; raised as :class:`LinkFoundUp`, carrying the role and the link read). A libusb gs_usb role's caller must read the bus: the device stops taking
   sends after 257 unread TX echoes (gen-inhibit tester, 2026-11-19). ``drain=True`` runs a reader thread that
-  reads and counts everything (``bus.bench_drain``) for a caller that only sends; ``recv`` is refused while it runs,
-  and ``bus.stop_drain()`` or ``shutdown()`` stops it.
+  reads and counts everything (``bus.bench_drain``) for a caller that only sends, split at the first send
+  (``before_send``, with the frames' ids, and ``after_send``: the device can hand a frame left from an earlier
+  session to the next open); ``recv`` is refused while it runs, and ``bus.stop_drain()`` or ``shutdown()`` stops
+  it.
 * :func:`refuse_picks` -- index, channel, USB bus / address, device id, serial and interface keywords are refused
   everywhere here: an adapter is asked for by its role (shared/bench SPEC section 8).
 * :func:`bus_error` / :func:`bus_error_class` -- the error-frame classifier (gen-inhibit reviewer, 2026-11-18): on
@@ -73,6 +75,10 @@ IF_UP = ("take", "refuse")
 # 5 +/- 3 ms after the last frame, with nothing ACKing from close + 20 ms).
 DRAIN_READ_S = 0.001
 DRAIN_FAIL_WAIT_S = 0.02                # after a read that fails at once (device gone): an Event wait, cut by stop
+# open_bench(drain=True) returns once the drain has had a read come back empty (the device had nothing more queued),
+# for at most this long, so what the device held at open is read before the caller's first send.
+DRAIN_PRIME_S = 0.05
+DRAIN_FRAMES_KEPT = 32                  # before_send["frames"]: the first this many frames read before the first send
 
 BUS_ERROR_CLASSES = (_e.CAN_ERR_TX_TIMEOUT | _e.CAN_ERR_LOSTARB | _e.CAN_ERR_PROT | _e.CAN_ERR_TRX
                      | _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)
@@ -84,6 +90,15 @@ class BenchLayerError(RuntimeError):
 
 class NoGuard(BenchLayerError):
     """No bench guard is set (set_guard): nothing on the bench is touched."""
+
+
+class LinkFoundUp(BenchLayerError):
+    """open_bench(if_up="refuse") found the role's link up and touched nothing. ``role``, ``netdev``, and ``link``:
+    the link as read (link_info: up, bitrate, listen_only, restart_ms, state; None if it could not be read)."""
+
+    def __init__(self, msg, role, netdev, link):
+        super().__init__(msg)
+        self.role, self.netdev, self.link = role, netdev, link
 
 
 _guard = None
@@ -330,8 +345,13 @@ def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None
     guard(f"open_bench {role}")
     res = _resolve(role)
     if if_up == "refuse" and res.netdev and res.role.link == "up":
-        raise BenchLayerError(f"open_bench({role!r}): link {res.netdev} found up, refused (if_up='refuse'); nothing "
-                              f"was touched")
+        try:
+            lk = link_info(res.netdev)
+        except BenchLayerError:
+            lk = None
+        raise LinkFoundUp(f"open_bench({role!r}): link {res.netdev} found up"
+                          + (f" (bitrate {lk['bitrate']}, state {lk['state']})" if lk else "")
+                          + ", refused (if_up='refuse'); nothing was touched", role, res.netdev, lk)
     kind = res.role.kind
     want = mode or DEFAULT_MODES.get(role)
     if want is None:
@@ -385,10 +405,20 @@ def _start_drain(bus, role):
     """A reader thread on a libusb gs_usb bus that reads and counts every frame (TX echoes, received frames, error
     frames) so a caller that only sends never fills the device's echo slots. bus.recv is refused while it runs;
     bus.stop_drain() stops it (and returns the counts, with stop_ms: how long the stop took), as shutdown() does
-    before closing the device. Each read is 1 ms (DRAIN_READ_S), so a stop waits out at most one read."""
-    stats = {"echoes": 0, "rx": 0, "errors": 0, "running": True, "error": None, "stop_ms": None}
-    stop = threading.Event()
-    orig_recv, orig_shutdown = bus.recv, bus.shutdown
+    before closing the device. Each read is 1 ms (DRAIN_READ_S), so a stop waits out at most one read.
+
+    echoes / rx / errors count everything read; before_send and after_send split them at the bus's first send()
+    (gen-inhibit reviewer, 2026-11-19: canmain handed a replay one frame more than it sent, read at the next open).
+    before_send also keeps the first DRAIN_FRAMES_KEPT frames read (kind, id, extended, data hex). Before returning,
+    the caller waits until a read has come back empty (primed; at most DRAIN_PRIME_S), so what the device held at
+    open lands in before_send."""
+    def counts():
+        return {"echoes": 0, "rx": 0, "errors": 0}
+
+    stats = {"echoes": 0, "rx": 0, "errors": 0, "running": True, "error": None, "stop_ms": None, "primed": False,
+             "before_send": dict(counts(), frames=[]), "after_send": counts()}
+    stop, primed, sent = threading.Event(), threading.Event(), threading.Event()
+    orig_recv, orig_shutdown, orig_send = bus.recv, bus.shutdown, bus.send
 
     def reader():
         try:
@@ -398,17 +428,27 @@ def _start_drain(bus, role):
                 if m is None:
                     if time.monotonic() - t0 < DRAIN_READ_S / 2:
                         stop.wait(DRAIN_FAIL_WAIT_S)    # a read that fails at once (device gone): do not spin
+                    elif not primed.is_set():
+                        stats["primed"] = True
+                        primed.set()
                     continue
-                if m.is_error_frame:
-                    stats["errors"] += 1
-                elif m.is_rx:
-                    stats["rx"] += 1
-                else:
-                    stats["echoes"] += 1
+                kind = "errors" if m.is_error_frame else "rx" if m.is_rx else "echoes"
+                stats[kind] += 1
+                part = stats["after_send" if sent.is_set() else "before_send"]
+                part[kind] += 1
+                if not sent.is_set() and len(part["frames"]) < DRAIN_FRAMES_KEPT:
+                    part["frames"].append({"kind": {"errors": "error", "rx": "rx", "echoes": "echo"}[kind],
+                                           "id": m.arbitration_id, "extended": m.is_extended_id,
+                                           "data": bytes(m.data).hex()})
         except Exception as e:
             stats["error"] = f"{type(e).__name__}: {e}"
         finally:
             stats["running"] = False
+            primed.set()
+
+    def send(*a, **k):
+        sent.set()                                      # before the frame goes: its echo counts after the send
+        return orig_send(*a, **k)
 
     def recv(*a, **k):
         raise BenchLayerError(f"{role}: the drain thread is reading this bus (open_bench drain=True); "
@@ -423,7 +463,8 @@ def _start_drain(bus, role):
         if stats["stop_ms"] is None:
             stats["stop_ms"] = round((time.monotonic() - t0) * 1000, 3)
         bus.recv = orig_recv
-        return dict(stats)
+        return {k: (dict(v, frames=list(v["frames"])) if k == "before_send" else dict(v) if isinstance(v, dict) else v)
+                for k, v in stats.items()}
 
     def shutdown():
         try:
@@ -432,8 +473,9 @@ def _start_drain(bus, role):
             orig_shutdown()
 
     t = threading.Thread(target=reader, name=f"bench-drain-{role}", daemon=True)
-    bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown = stats, stop_drain, recv, shutdown
+    bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown, bus.send = stats, stop_drain, recv, shutdown, send
     t.start()
+    primed.wait(DRAIN_PRIME_S)
 
 
 def _restore_on_shutdown(bus, role, found, now_mode):

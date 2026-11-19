@@ -176,6 +176,7 @@ class Rec:
     rx = []                     # what recv() hands out, in order; empty: recv waits its timeout and returns None
     gone = False                # recv returns None at once (a device gone)
     reads = 0
+    rx_delay = 0.0              # each frame handed out takes this long to read
 
     def __init__(self, **kw):
         if Rec.fail:
@@ -189,6 +190,7 @@ class Rec:
     def recv(self, timeout=None):
         Rec.reads += 1
         if Rec.rx:
+            time.sleep(Rec.rx_delay)
             return Rec.rx.pop(0)
         if not Rec.gone:
             time.sleep(timeout or 0)
@@ -206,7 +208,7 @@ def bench(fn, guard=True, **roles_changes):
     b = Bench(**roles_changes)
     real_bus, real_hw = can.Bus, H.SocketcanHwBus
     can.Bus = Rec
-    Rec.calls, Rec.fail, Rec.rx, Rec.gone, Rec.reads = [], None, [], False, 0
+    Rec.calls, Rec.fail, Rec.rx, Rec.gone, Rec.reads, Rec.rx_delay = [], None, [], False, 0, 0.0
     H.SocketcanHwBus = lambda channel, **kw: Rec(interface="socketcan_hw", channel=channel, **kw)
     old = L.set_guard((lambda: None) if guard else None)
     try:
@@ -409,6 +411,13 @@ def test_open_bench_if_up_refuse():
         b.role("kvaser", link="up", bitrate=500000, restart_ms=100)
         refused(lambda: L.open_bench("kvaser", 500000, restart_ms=100, if_up="refuse"), "link kvaser found up")
         refused(lambda: L.open_bench("canchg", 500000, if_up="leave"), "if_up='leave'")
+        try:
+            L.open_bench("kvaser", 500000, if_up="refuse")
+            raise AssertionError("not refused")
+        except L.LinkFoundUp as e:
+            assert isinstance(e, L.BenchLayerError) and (e.role, e.netdev) == ("kvaser", "kvaser"), e
+            assert e.link["up"] and e.link["bitrate"] == 500000 and e.link["restart_ms"] == 100, e.link
+            assert "bitrate 500000" in str(e), e
         assert b.log() == [] and Rec.calls == [], (b.log(), Rec.calls)
         b.role("canmain", link="down")
         L.open_bench("canmain", 500000, if_up="refuse").shutdown()
@@ -462,6 +471,46 @@ def test_open_bench_drain():
         refused(lambda: L.open_bench("kvaser", 500000, drain=True), "drain is for a gs_usb role in libusb mode")
         refused(lambda: L.open_bench("canchg", 500000, mode="socketcan", drain=True), "not gs_usb socketcan")
         assert len(b.log()) == n, b.log()
+    bench(body)
+
+
+def test_open_bench_drain_splits_at_the_first_send():
+    """gen-inhibit reviewer, 2026-11-19: canmain handed a replay one frame more than it sent (an echo or an rx frame
+    left from an earlier session, read at the next open). The drain counts what it read before the first send apart,
+    with the frames' ids, and open_bench returns only once the device's queue has been read empty."""
+    def body(b):
+        Rec.rx_delay = 0.01
+        Rec.rx = [can.Message(arbitration_id=0x6B5, is_extended_id=False, is_rx=False, data=b"\x00\x00\x01\xf4"),
+                  can.Message(arbitration_id=0x18DAF110, is_extended_id=True, data=b"\x01")]
+        bus = L.open_bench("canmain", 500000, drain=True, restore=False)
+        d = bus.bench_drain
+        assert d["primed"] and d["before_send"] == {"echoes": 1, "rx": 1, "errors": 0, "frames": [
+            {"kind": "echo", "id": 0x6B5, "extended": False, "data": "000001f4"},
+            {"kind": "rx", "id": 0x18DAF110, "extended": True, "data": "01"}]}, d
+        Rec.rx_delay = 0.0
+        for i in range(3):
+            Rec.rx.append(can.Message(arbitration_id=0x6B0, is_rx=False))
+            bus.send(can.Message(arbitration_id=0x6B0))
+        Rec.rx.append(can.Message(is_error_frame=True))
+        t_end = time.monotonic() + 5
+        while sum(_counts(bus)) < 6 and time.monotonic() < t_end:
+            time.sleep(0.01)
+        got = bus.stop_drain()
+        assert got["after_send"] == {"echoes": 3, "rx": 0, "errors": 1}, got
+        assert (got["echoes"], got["rx"], got["errors"]) == (4, 1, 1), got
+        assert len(got["before_send"]["frames"]) == 2 and got["before_send"]["echoes"] == 1, got
+        got["before_send"]["frames"].clear()
+        assert len(bus.bench_drain["before_send"]["frames"]) == 2, "stop_drain returns a copy"
+        bus.shutdown()
+        Rec.rx = [can.Message(arbitration_id=i) for i in range(L.DRAIN_FRAMES_KEPT + 5)]
+        bus = L.open_bench("canmain", 500000, drain=True, restore=False)
+        t_end = time.monotonic() + 5
+        while Rec.rx and time.monotonic() < t_end:
+            time.sleep(0.01)
+        got = bus.stop_drain()
+        assert got["before_send"]["rx"] == L.DRAIN_FRAMES_KEPT + 5, got
+        assert len(got["before_send"]["frames"]) == L.DRAIN_FRAMES_KEPT, "the kept frames are capped"
+        bus.shutdown()
     bench(body)
 
 
@@ -581,13 +630,21 @@ MUTANTS = [
      "            r = _resolve(role).role\n            if r.netdev"),
     ("bench_layer", 'if if_up == "refuse" and res.netdev', 'if False and res.netdev'),
     ("bench_layer", "    if if_up not in IF_UP:", "    if False:"),
-    ("bench_layer", "                elif m.is_rx:", "                elif True:"),
+    ("bench_layer", "        raise LinkFoundUp(f\"open_bench", "        raise BenchLayerError(f\"open_bench"),
+    ("bench_layer", "        sent.set()                                      # before", "        pass  # before"),
+    ("bench_layer", '                part = stats["after_send" if sent.is_set() else "before_send"]',
+     '                part = stats["before_send"]'),
+    ("bench_layer", "                if not sent.is_set() and len(part[\"frames\"])", "                if len(part[\"frames\"])"),
+    ("bench_layer", "    primed.wait(DRAIN_PRIME_S)\n", "\n"),
+    ("bench_layer", "                    elif not primed.is_set():", "                    elif False:"),
+    ("bench_layer", "        return {k: (dict(v, frames=list(v[\"frames\"]))", "        return {k: (v"),
+    ("bench_layer", 'else "rx" if m.is_rx else "echoes"', 'else "rx" if True else "echoes"'),
     ("bench_layer", "        bus.recv = orig_recv\n", "        pass\n"),
     ("bench_layer", "            stop_drain()\n        finally:", "            pass\n        finally:"),
     ("bench_layer", 'if drain and not (kind == "gs_usb" and want == "libusb"):', "if False:"),
     ("bench_layer", "    if drain:\n        _start_drain", "    if False:\n        _start_drain"),
-    ("bench_layer", "bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown = stats, stop_drain, recv, shutdown",
-     "bus.bench_drain, bus.stop_drain, bus.shutdown = stats, stop_drain, shutdown"),
+    ("bench_layer", "bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown, bus.send = stats, stop_drain, recv, shutdown, send",
+     "bus.bench_drain, bus.stop_drain, bus.shutdown, bus.send = stats, stop_drain, shutdown, send"),
     ("bench_layer", "                        stop.wait(DRAIN_FAIL_WAIT_S)", "                        pass"),
     ("bench_layer", "                        stop.wait(DRAIN_FAIL_WAIT_S)", "                        time.sleep(DRAIN_FAIL_WAIT_S)"),
     ("bench_layer", "DRAIN_READ_S = 0.001", "DRAIN_READ_S = 0.05"),
