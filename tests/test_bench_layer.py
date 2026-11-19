@@ -176,6 +176,8 @@ class Rec:
     rx = []                     # what recv() hands out, in order; empty: recv waits its timeout and returns None
     gone = False                # recv returns None at once (a device gone)
     reads = 0
+    gen = 0                     # bench() bumps it: a bus from an earlier bench() (a drain thread a mutant leaked)
+                                # raises on its next read, so it cannot take a later check's frames
     rx_delay = 0.0              # each frame handed out takes this long to read
 
     def __init__(self, **kw):
@@ -183,11 +185,14 @@ class Rec:
             raise Rec.fail
         Rec.calls.append(kw)
         self.shut = 0
+        self.gen = Rec.gen
 
     def send(self, msg, timeout=None):
         pass
 
     def recv(self, timeout=None):
+        if self.gen != Rec.gen:
+            raise RuntimeError("a bus from an earlier check")
         Rec.reads += 1
         if Rec.rx:
             time.sleep(Rec.rx_delay)
@@ -208,6 +213,7 @@ def bench(fn, guard=True, **roles_changes):
     b = Bench(**roles_changes)
     real_bus, real_hw = can.Bus, H.SocketcanHwBus
     can.Bus = Rec
+    Rec.gen += 1
     Rec.calls, Rec.fail, Rec.rx, Rec.gone, Rec.reads, Rec.rx_delay = [], None, [], False, 0, 0.0
     H.SocketcanHwBus = lambda channel, **kw: Rec(interface="socketcan_hw", channel=channel, **kw)
     old = L.set_guard((lambda: None) if guard else None)
