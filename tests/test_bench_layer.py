@@ -439,11 +439,25 @@ def test_open_bench_drain():
         bus = L.open_bench("canchg", 500000, drain=True, restore=False)
         assert bus.stop_drain()["running"] is False
         assert bus.recv(0.01) is None, "recv works once the drain is stopped"
+        assert L.DRAIN_READ_S <= 0.001, "each drain read is gs_usb's least, 1 ms"
+        worst = 0
+        for _ in range(3):
+            bus = L.open_bench("canchg", 500000, drain=True, restore=False)
+            time.sleep(0.05)
+            worst = max(worst, bus.stop_drain()["stop_ms"])
+            bus.shutdown()
+        assert worst < 30, f"stop_drain waits out at most one read (worst {worst} ms)"
         Rec.gone, Rec.reads = True, 0
-        bus = L.open_bench("canmain", 500000, drain=True)
-        time.sleep(0.3)
-        bus.shutdown()
-        assert Rec.reads < 30, f"a read that fails at once is not spun on ({Rec.reads} reads in 0.3 s)"
+        saved, L.DRAIN_FAIL_WAIT_S = L.DRAIN_FAIL_WAIT_S, 1.0
+        try:
+            bus = L.open_bench("canmain", 500000, drain=True, restore=False)    # time the stop, not a put-back
+            time.sleep(0.3)
+            t0 = time.monotonic()
+            bus.shutdown()
+            assert time.monotonic() - t0 < 0.5, "the wait after a failed read is cut by the stop"
+        finally:
+            L.DRAIN_FAIL_WAIT_S = saved
+        assert Rec.reads < 60, f"a read that fails at once is not spun on ({Rec.reads} reads in 0.3 s)"
         n = len(b.log())
         refused(lambda: L.open_bench("kvaser", 500000, drain=True), "drain is for a gs_usb role in libusb mode")
         refused(lambda: L.open_bench("canchg", 500000, mode="socketcan", drain=True), "not gs_usb socketcan")
@@ -574,7 +588,9 @@ MUTANTS = [
     ("bench_layer", "    if drain:\n        _start_drain", "    if False:\n        _start_drain"),
     ("bench_layer", "bus.bench_drain, bus.stop_drain, bus.recv, bus.shutdown = stats, stop_drain, recv, shutdown",
      "bus.bench_drain, bus.stop_drain, bus.shutdown = stats, stop_drain, shutdown"),
-    ("bench_layer", "                        stop.wait(DRAIN_POLL_S)", "                        pass"),
+    ("bench_layer", "                        stop.wait(DRAIN_FAIL_WAIT_S)", "                        pass"),
+    ("bench_layer", "                        stop.wait(DRAIN_FAIL_WAIT_S)", "                        time.sleep(DRAIN_FAIL_WAIT_S)"),
+    ("bench_layer", "DRAIN_READ_S = 0.001", "DRAIN_READ_S = 0.05"),
     ("bench_layer", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)", "| _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR | _e.CAN_ERR_CRTL)"),
     ("bench_layer", "    if not _is_socketcan(bus):\n        return True", "    if not _is_socketcan(bus):\n        return False"),
     ("bench_scan", "    if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):\n        return",

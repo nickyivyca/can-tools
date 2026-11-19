@@ -68,7 +68,11 @@ MODES_BY_KIND = {"gs_usb": ("socketcan", "libusb"), "kvaser": ("socketcan", "lin
 DEFAULT_MODES = {"pcanfd": "pcan", "canchg": "libusb", "canmain": "libusb", "kvaser": "socketcan"}
 
 IF_UP = ("take", "refuse")
-DRAIN_POLL_S = 0.05                     # the drain thread's read timeout: how soon it sees stop_drain()
+# The drain thread's read timeout, gs_usb's least (1 ms): stop_drain() waits out at most one read, so the device
+# can be closed within about 2 ms of the stop (gen-inhibit reviewer, 2026-11-19: NONODE and canmain_burst_check close
+# 5 +/- 3 ms after the last frame, with nothing ACKing from close + 20 ms).
+DRAIN_READ_S = 0.001
+DRAIN_FAIL_WAIT_S = 0.02                # after a read that fails at once (device gone): an Event wait, cut by stop
 
 BUS_ERROR_CLASSES = (_e.CAN_ERR_TX_TIMEOUT | _e.CAN_ERR_LOSTARB | _e.CAN_ERR_PROT | _e.CAN_ERR_TRX
                      | _e.CAN_ERR_ACK | _e.CAN_ERR_BUSERROR)
@@ -380,8 +384,9 @@ def open_bench(role: str, bitrate: int | None = None, *, mode: str | None = None
 def _start_drain(bus, role):
     """A reader thread on a libusb gs_usb bus that reads and counts every frame (TX echoes, received frames, error
     frames) so a caller that only sends never fills the device's echo slots. bus.recv is refused while it runs;
-    bus.stop_drain() stops it (and returns the counts), as shutdown() does before closing the device."""
-    stats = {"echoes": 0, "rx": 0, "errors": 0, "running": True, "error": None}
+    bus.stop_drain() stops it (and returns the counts, with stop_ms: how long the stop took), as shutdown() does
+    before closing the device. Each read is 1 ms (DRAIN_READ_S), so a stop waits out at most one read."""
+    stats = {"echoes": 0, "rx": 0, "errors": 0, "running": True, "error": None, "stop_ms": None}
     stop = threading.Event()
     orig_recv, orig_shutdown = bus.recv, bus.shutdown
 
@@ -389,10 +394,10 @@ def _start_drain(bus, role):
         try:
             while not stop.is_set():
                 t0 = time.monotonic()
-                m = orig_recv(DRAIN_POLL_S)
+                m = orig_recv(DRAIN_READ_S)
                 if m is None:
-                    if time.monotonic() - t0 < DRAIN_POLL_S / 2:
-                        stop.wait(DRAIN_POLL_S)         # a read that fails at once (device gone): do not spin
+                    if time.monotonic() - t0 < DRAIN_READ_S / 2:
+                        stop.wait(DRAIN_FAIL_WAIT_S)    # a read that fails at once (device gone): do not spin
                     continue
                 if m.is_error_frame:
                     stats["errors"] += 1
@@ -410,10 +415,13 @@ def _start_drain(bus, role):
                               f"bus.stop_drain() first")
 
     def stop_drain():
+        t0 = time.monotonic()
         stop.set()
         t.join(5)
         if t.is_alive():
             raise BenchLayerError(f"{role}: the drain thread did not stop within 5 s")
+        if stats["stop_ms"] is None:
+            stats["stop_ms"] = round((time.monotonic() - t0) * 1000, 3)
         bus.recv = orig_recv
         return dict(stats)
 

@@ -122,7 +122,7 @@ that did not settle, a link that read back wrong, the open itself), puts it back
 a whole run; `if_up="refuse"` refuses a role whose link is found up, touching nothing. A libusb gs_usb role must
 be read: the device stops taking sends after 257 unread TX echoes; `drain=True` (libusb gs_usb only) runs a reader
 thread that reads and counts everything (`bus.bench_drain`) for a caller that only sends, refuses `recv` while it
-runs, and stops on `bus.stop_drain()` or `shutdown()`. A libusb gs_usb role from `open_role` honours
+runs, and stops on `bus.stop_drain()` or `shutdown()`; it reads 1 ms at a time, so a stop waits out at most one read (`stop_ms` in the counts; on the bench 1.1-2.5 ms, the whole `shutdown()` 1.5-3.0 ms). A libusb gs_usb role from `open_role` honours
 `send(msg, timeout)` (python-can's GsUsbBus ignores it; pyusb's default is 1 s). Index, channel, USB bus / address, device id, serial and interface keywords are refused.
 `bus_error(bus, msg)` counts only bus-error classes on SocketCAN (not CRTL, BUSOFF, RESTARTED, CNT alone), every
 error frame elsewhere. `canbench.bench_scan` is the adapter-open scan a project runs on its own tree from its own
