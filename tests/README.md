@@ -15,7 +15,7 @@ records it with can_logger to TRC, end to end, whole and with `--window` (a slic
 and `SCM_TIMESTAMPING` data): both stamps per frame, error frames passed whole, and the per-open stamp check's
 pass and its failures (all-zero hardware stamps, host time posing as hardware, stamps that don't advance).
 
-`test_bench_roles.py` covers `canbench.bench_roles` on synthetic `canctl roles` text: each kind and mode resolved, every refusal, `open_role` only after the caller's `canctl up`, `hw_timestamps` only on a SocketCAN netdev, `role:` ids added by what canctl reports, a replay bus pinned by role, a missing or pre-roles canctl.
+`test_bench_roles.py` covers `canbench.bench_roles` on synthetic `canctl roles` text: each kind and mode resolved, every refusal, `open_role` only after the caller's `canctl up`, `hw_timestamps` only on a SocketCAN netdev, `role:` ids added by what canctl reports, a replay bus pinned by role, a missing or pre-roles canctl, `open_role` applying `linux_fixes` and releasing a libusb gs_usb role on `shutdown()`.
 
 **The default suite opens no real adapter** (2026-11-18): detection in the tests runs on fake sysfs with python-can's `Bus` and the libusb scan stubbed, the GUI smoke test stubs detection, and `test_gui_hardware.py` runs only with `CANBENCH_HARDWARE_TESTS=1`, inside your own bench take. Before that, the suite's GUI tests ran real detection (PCAN channels opened at 500k) during another session's take on the madhouse bench.
 

@@ -53,15 +53,21 @@ def refused(fn, *words):
 class Rec:
     """Stands in for can.Bus: records what it was asked to open."""
     calls = []
+    shut = []
 
     def __init__(self, **kw):
         Rec.calls.append(kw)
+        self.gs_usb = None
+
+    def shutdown(self):
+        Rec.shut.append(self)
 
 
 def with_fake_bus(fn):
     real = can.Bus
     can.Bus = Rec
     Rec.calls = []
+    Rec.shut = []
     try:
         return fn()
     finally:
@@ -141,6 +147,24 @@ def test_open_role_modes_and_bitrate():
                           "address": 40}]
     with_fake_bus(lambda: B.open_role("pcanfd", bitrate=500000, text=text()))
     assert Rec.calls == [{"interface": "pcan", "bitrate": 500000, "device_id": 3}]
+
+
+def test_open_role_applies_linux_fixes_and_releases_a_libusb_role():
+    from canbench.live import linux_fixes, receiver
+    applied, released = [], []
+    real_apply, real_release = linux_fixes.apply, receiver.release_gs_usb
+    linux_fixes.apply = lambda: applied.append(1)
+    receiver.release_gs_usb = lambda bus: released.append(bus)
+    try:
+        bus = with_fake_bus(lambda: B.open_role("canchg", bitrate=500000, text=text()))
+        assert applied == [1] and released == []
+        bus.shutdown()
+        assert Rec.shut == [bus] and released == [bus]
+        sock = with_fake_bus(lambda: B.open_role("canmain", text=text()))
+        sock.shutdown()
+        assert released == [bus], "only a libusb gs_usb role is released"
+    finally:
+        linux_fixes.apply, receiver.release_gs_usb = real_apply, real_release
 
 
 def test_hw_timestamps_only_on_a_socketcan_netdev():

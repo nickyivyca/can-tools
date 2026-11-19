@@ -234,6 +234,10 @@ def open_role(role: str, *, bitrate: int | None = None, modes=None, hw_timestamp
         raise RoleError(f"{role}: hw_timestamps needs a SocketCAN netdev; {role} is in mode {res.mode}")
     args = dict(res.kwargs)
     args.update(kw)
+    # receiver does this on import; a caller opening by role may never import it (Kvaser on linuxcan,
+    # gs_usb over libusb: canbench.live.linux_fixes). Idempotent.
+    from canbench.live import linux_fixes
+    linux_fixes.apply()
     if res.interface == "socketcan":
         # the netdev's bitrate is canctl's (set at canctl up); nothing to pass
         if hw_timestamps:
@@ -245,11 +249,32 @@ def open_role(role: str, *, bitrate: int | None = None, modes=None, hw_timestamp
         if bitrate is None:
             raise RoleError(f"{role} in mode {res.mode} is set up when opened: give bitrate=")
         bus = can.Bus(interface=res.interface, bitrate=bitrate, **args)
+    if res.interface == "gs_usb":
+        _release_on_shutdown(bus)
     try:
         bus.bench_role = res
     except AttributeError:
         pass
     return bus
+
+
+def _release_on_shutdown(bus):
+    """Make ``bus.shutdown()`` also dispose the pyusb handle of a libusb gs_usb role.
+
+    python-can's GsUsbBus.shutdown() stops the device but keeps it claimed until the process exits, so
+    canctl cannot move the role (``canctl mode <role> socketcan`` fails "bind failed") and the next open of it
+    in this process fails. Found in the step 3 bench check, 2026-11-18.
+    """
+    from canbench.live.receiver import release_gs_usb
+    orig = bus.shutdown
+
+    def shutdown():
+        try:
+            orig()
+        finally:
+            release_gs_usb(bus)
+
+    bus.shutdown = shutdown
 
 
 def tag_adapters(adapters, text: str | None = None, _kvaser_channels=None):
