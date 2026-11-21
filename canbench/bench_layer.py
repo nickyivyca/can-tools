@@ -14,6 +14,9 @@ bring a link up or down, on an explicit call, behind a plugged-in bench guard):
 * :func:`link_up` / :func:`link_down` -- ``canctl up <role> <bitrate> [restart-ms N]`` / ``canctl down <role>``,
   each read back with ``ip -details -json link show <netdev>`` (no root): UP, that bitrate, not listen-only (and
   the restart-ms asked for); or not UP.
+* :func:`link_counters` -- read-only: a SocketCAN role's bus-off, restart, error-state, bus-error and
+  arbitration-lost counts and its TX dropped / aborted / errors / packets, from ``ip -s -s -details -json``, for a
+  caller that reads them before and after a window. No guard (it changes nothing), like :func:`link_info`.
 * :func:`set_mode` (and :func:`to_libusb`, :func:`to_socketcan`) -- ``canctl mode <role> <mode>`` (``--wait`` for
   socketcan), read back from ``canctl roles`` until the role resolves in that mode (gs_usb socketcan: bound to
   gs_usb, with a netdev, link down). A netdev role whose link is up is refused: take it down first.
@@ -55,6 +58,9 @@ from canbench import errors as _e
 SUDO = ["sudo", "-n"]
 CANCTL = None                           # None: bench_roles.CANCTL (env CANBENCH_CANCTL or /usr/local/sbin/canctl)
 IP_SHOW = ["ip", "-details", "-json", "link", "show"]
+IP_STATS = ["ip", "-details", "-statistics", "-statistics", "-json", "link", "show", "dev"]   # -s twice: tx aborted_errors
+XSTATS_KEYS = ("bus_off", "restarts", "error_passive", "error_warning", "bus_error", "arbitration_lost")
+TX_KEYS = ("dropped", "aborted_errors", "errors", "packets")
 CANCTL_TIMEOUT_S = 60
 WAIT_S = 10.0
 POLL_S = 0.25
@@ -182,6 +188,39 @@ def link_info(netdev: str) -> dict:
             "listen_only": "LISTEN-ONLY" in (data.get("ctrlmode") or []),
             "restart_ms": data.get("restart_ms"),
             "state": data.get("state")}
+
+
+def link_counters(role: str) -> dict:
+    """A SocketCAN role's controller and TX counters, read-only (``ip -details -statistics -statistics -json link
+    show dev <netdev>``, no root, no guard): ``netdev``, ``state`` (info_data), the CAN extended stats ``bus_off``,
+    ``restarts``, ``error_passive``, ``error_warning``, ``bus_error``, ``arbitration_lost`` (info_xstats), and
+    ``tx_dropped``, ``tx_aborted_errors``, ``tx_errors``, ``tx_packets`` (stats64.tx). The counters are cumulative
+    since the netdev appeared: read before and after a window and subtract. BenchLayerError if the role has no netdev,
+    the netdev cannot be read, or any key is missing (never 0 in place of a missing value). Asked for by the
+    charge-interposer tester (2026-11-20, bench_vport's bus-off count per wrong-bit-rate window)."""
+    dev = _netdev(role)
+    try:
+        p = subprocess.run(IP_STATS + [dev], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        if p.returncode != 0:
+            raise BenchLayerError(f"ip -s -s link show {dev}: rc {p.returncode}: {(p.stderr or p.stdout).strip()[:200]}")
+        d = json.loads(p.stdout)[0]
+    except BenchLayerError:
+        raise
+    except Exception as e:
+        raise BenchLayerError(f"the counters of {dev} cannot be read: {type(e).__name__}: {e}")
+    li = d.get("linkinfo") or {}
+    xs = li.get("info_xstats") or {}
+    tx = (d.get("stats64") or {}).get("tx") or {}
+    state = (li.get("info_data") or {}).get("state")
+    missing = ([f"info_xstats.{k}" for k in XSTATS_KEYS if not isinstance(xs.get(k), int)]
+               + [f"stats64.tx.{k}" for k in TX_KEYS if not isinstance(tx.get(k), int)]
+               + ([] if isinstance(state, str) else ["info_data.state"]))
+    if missing:
+        raise BenchLayerError(f"the counters of {dev} ({role}) lack {', '.join(missing)}")
+    out = {"netdev": dev, "state": state}
+    out.update({k: xs[k] for k in XSTATS_KEYS})
+    out.update({f"tx_{k}": tx[k] for k in TX_KEYS})
+    return out
 
 
 def _netdev(role, res=None):

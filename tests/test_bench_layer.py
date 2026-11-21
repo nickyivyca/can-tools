@@ -102,7 +102,25 @@ for r in st["roles"].values():
         if r.get("listen_only"):
             info["ctrlmode"] = ["LISTEN-ONLY"]
         flags = ["NOARP", "ECHO"] + (["UP", "LOWER_UP"] if r["link"] == "up" else [])
-        print(json.dumps([{"ifname": dev, "flags": flags, "linkinfo": {"info_kind": "can", "info_data": info}}]))
+        if r.get("unreadable"):
+            break
+        d = {"ifname": dev, "flags": flags, "linkinfo": {"info_kind": "can", "info_data": info}}
+        if "-statistics" in sys.argv:
+            if "state" in r.get("drop", []):
+                del info["state"]
+            xs = {"restarts": 3, "bus_error": 1780, "arbitration_lost": 4, "error_warning": 5, "error_passive": 2,
+                  "bus_off": 6}
+            tx = {"bytes": 38544, "packets": 4818, "errors": 7, "dropped": 8, "carrier_errors": 0,
+                  "aborted_errors": 9, "fifo_errors": 0}
+            for k in r.get("drop", []):
+                xs.pop(k, None)
+                if k.startswith("tx_"):
+                    tx.pop(k[3:], None)
+            if sys.argv.count("-statistics") < 2:
+                tx.pop("aborted_errors", None)  # ip prints aborted_errors only with -s twice
+            d["linkinfo"]["info_xstats"] = xs
+            d["stats64"] = {"rx": {"packets": 935054, "errors": 1780, "dropped": 0}, "tx": tx}
+        print(json.dumps([d]))
         sys.exit(0)
 print('Device "%%s" does not exist.' %% dev, file=sys.stderr)
 sys.exit(1)
@@ -141,8 +159,9 @@ class Bench:
         ip = os.path.join(self.dir, "fake_ip.py")
         with open(ip, "w") as f:
             f.write(FAKE_IP % {"state": self.state})
-        self.saved = (L.SUDO, L.CANCTL, L.IP_SHOW, L.sleep, L.monotonic, L.WAIT_S)
+        self.saved = (L.SUDO, L.CANCTL, L.IP_SHOW, L.IP_STATS, L.sleep, L.monotonic, L.WAIT_S)
         L.SUDO, L.CANCTL, L.IP_SHOW = [], self.canctl, [PY, ip]
+        L.IP_STATS = [PY, ip] + L.IP_STATS[1:]  # the real flags, so the fake sees whether -s was given twice
         self.t = [0.0]
         L.sleep = lambda s: self.t.__setitem__(0, self.t[0] + s)
         L.monotonic = lambda: self.t[0]
@@ -168,7 +187,7 @@ class Bench:
         return [c for c in self.read()["log"] if c != "roles"]
 
     def close(self):
-        L.SUDO, L.CANCTL, L.IP_SHOW, L.sleep, L.monotonic, L.WAIT_S = self.saved
+        L.SUDO, L.CANCTL, L.IP_SHOW, L.IP_STATS, L.sleep, L.monotonic, L.WAIT_S = self.saved
 
 
 class Rec:
@@ -292,6 +311,25 @@ def test_link_down_reads_back():
         refused(lambda: L.link_down("kvaser"), "still reads UP")
         refused(lambda: L.link_up("canx2", 500000), "has no netdev")
     bench(body)
+
+
+def test_link_counters_read_only_and_never_a_missing_zero():
+    def body(b):
+        got = L.link_counters("kvaser")
+        assert got == {"netdev": "kvaser", "state": "ERROR-ACTIVE", "bus_off": 6, "restarts": 3, "error_passive": 2,
+                       "error_warning": 5, "bus_error": 1780, "arbitration_lost": 4, "tx_dropped": 8,
+                       "tx_aborted_errors": 9, "tx_errors": 7, "tx_packets": 4818}, got
+        assert b.log() == [], b.log()          # no canctl, and no guard needed (guard=False below)
+        for k, word in (("bus_off", "info_xstats.bus_off"), ("restarts", "info_xstats.restarts"),
+                        ("tx_dropped", "stats64.tx.dropped"), ("tx_aborted_errors", "stats64.tx.aborted_errors"),
+                        ("state", "info_data.state")):
+            b.role("kvaser", drop=[k])
+            refused(lambda: L.link_counters("kvaser"), "lack", word)
+        b.role("kvaser", drop=[], unreadable=True)
+        refused(lambda: L.link_counters("kvaser"), "rc 1")
+        refused(lambda: L.link_counters("canx2"), "has no netdev")
+        refused(lambda: L.link_counters(3), "refused")
+    bench(body, guard=False)
 
 
 # ------------------------------------------------------------------ modes
@@ -724,6 +762,11 @@ def test_scan_of_can_tools_matches_its_allow_list():
 # ------------------------------------------------------------------ runner and can-fail
 
 MUTANTS = [
+    ("bench_layer", '"-statistics", "-statistics", "-json"', '"-statistics", "-json"'),
+    ("bench_layer", 'if not isinstance(xs.get(k), int)]', "if False]"),
+    ("bench_layer", 'if not isinstance(tx.get(k), int)]', "if False]"),
+    ("bench_layer", '+ ([] if isinstance(state, str) else ["info_data.state"]))', ")"),
+    ("bench_layer", '    if missing:\n        raise BenchLayerError(f"the counters', '    if False:\n        raise BenchLayerError(f"the counters'),
     ("bench_layer", "    if _guard is None:\n        raise NoGuard(", "    if False:\n        raise NoGuard("),
     ("bench_layer", "    _guard()\n", "    pass\n"),
     ("bench_layer", 'if got["bitrate"] != int(bitrate):', "if False:"),

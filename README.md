@@ -114,7 +114,7 @@ canmain,kvaser`. The serial, USB and channel ids above stay for use off the benc
 canbench to run canctl on an explicit call, behind a plugged-in guard): `set_guard(fn)` registers the caller's
 bench guard (with none, nothing here touches the bench); `link_up(role, bitrate, restart_ms=)` /
 `link_down(role)` run `sudo -n canctl up|down` and read the link back with `ip -details -json` (UP, bitrate, not
-listen-only); `set_mode` / `to_libusb` / `to_socketcan` run `canctl mode` and read the role back from `canctl
+listen-only); `link_counters(role)` reads a SocketCAN role's counters, read-only and without the guard (`ip -details -s -s -json`: `state`, `bus_off`, `restarts`, `error_passive`, `error_warning`, `bus_error`, `arbitration_lost`, `tx_dropped`, `tx_aborted_errors`, `tx_errors`, `tx_packets`; cumulative, so read before and after a window; a missing key raises, never reads as 0); `set_mode` / `to_libusb` / `to_socketcan` run `canctl mode` and read the role back from `canctl
 roles`; `open_bench(role, bitrate, mode=, hw_timestamps=, restore=True, if_up="take")` brings the role to the
 caller's mode (defaults `DEFAULT_MODES`: pcanfd pcan, canchg and canmain libusb, kvaser socketcan), brings a
 SocketCAN link up, opens it by role, and on `shutdown()` puts it back as found; a failed open, at any step (a mode
